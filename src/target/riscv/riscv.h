@@ -150,6 +150,8 @@ typedef struct riscv_mem_access_args {
 	uint32_t size;
 	uint32_t count;
 	uint32_t increment;
+
+	bool is_capability;
 } riscv_mem_access_args_t;
 
 static inline bool
@@ -170,6 +172,13 @@ riscv_mem_access_is_write(const riscv_mem_access_args_t args)
 {
 	assert(riscv_mem_access_is_valid(args));
 	return !args.read_buffer && args.write_buffer;
+}
+
+static inline bool
+riscv_mem_access_is_capability(const riscv_mem_access_args_t args)
+{
+	assert(riscv_mem_access_is_valid(args));
+	return args.is_capability;
 }
 
 

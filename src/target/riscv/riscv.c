@@ -27,6 +27,7 @@
 #include "debug_defines.h"
 #include <helper/bits.h>
 #include "field_helpers.h"
+#include <helper/cheri.h>
 
 /*** JTAG registers. ***/
 
@@ -3446,10 +3447,12 @@ static int riscv_rw_memory(struct target *target, const riscv_mem_access_args_t 
 		riscv_mem_access_args_t current_access = args;
 		current_access.address = physical_addr;
 		current_access.count = chunk_count;
+		uint32_t buffer_size = riscv_mem_access_is_capability(args) ?
+									buf_cheri_capability_size(riscv_clen(target)) : args.size;
 		if (is_write)
-			current_access.write_buffer += current_count * args.size;
+			current_access.write_buffer += current_count * buffer_size;
 		else
-			current_access.read_buffer += current_count * args.size;
+			current_access.read_buffer += current_count * buffer_size;
 
 		result = r->access_memory(target, current_access);
 		if (result != ERROR_OK)
@@ -3484,6 +3487,36 @@ static int riscv_write_memory(struct target *target, target_addr_t address,
 		.size = size,
 		.count = count,
 		.increment = size,
+	};
+
+	return riscv_rw_memory(target, args);
+}
+
+static int riscv_read_cheri_capability_from_memory(struct target *target, target_addr_t address,
+		uint32_t count, uint8_t *buffer)
+{
+	const riscv_mem_access_args_t args = {
+		.address = address,
+		.read_buffer = buffer,
+		.size = cheri_capability_size(riscv_clen(target)),
+		.count = count,
+		.increment = cheri_capability_size(riscv_clen(target)),
+		.is_capability = true,
+	};
+
+	return riscv_rw_memory(target, args);
+}
+
+static int riscv_write_cheri_capability_to_memory(struct target *target, target_addr_t address,
+		uint32_t count, const uint8_t *buffer)
+{
+	const riscv_mem_access_args_t args = {
+		.address = address,
+		.write_buffer = buffer,
+		.size = cheri_capability_size(riscv_clen(target)),
+		.count = count,
+		.increment = cheri_capability_size(riscv_clen(target)),
+		.is_capability = true,
 	};
 
 	return riscv_rw_memory(target, args);
@@ -5888,6 +5921,11 @@ static unsigned int riscv_data_bits(struct target *target)
 	return riscv_xlen(target);
 }
 
+static unsigned int riscv_cheri_capability_bits(struct target *target)
+{
+	return riscv_clen(target);
+}
+
 struct target_type riscv_target = {
 	.name = "riscv",
 
@@ -5911,6 +5949,8 @@ struct target_type riscv_target = {
 	.write_memory = riscv_write_memory,
 	.read_phys_memory = riscv_read_phys_memory,
 	.write_phys_memory = riscv_write_phys_memory,
+	.read_cheri_capability_from_memory = riscv_read_cheri_capability_from_memory,
+	.write_cheri_capability_to_memory = riscv_write_cheri_capability_to_memory,
 
 	.checksum_memory = riscv_checksum_memory,
 
@@ -5920,6 +5960,8 @@ struct target_type riscv_target = {
 	.get_gdb_arch = riscv_get_gdb_arch,
 	.get_gdb_reg_list = riscv_get_gdb_reg_list,
 	.get_gdb_reg_list_noread = riscv_get_gdb_reg_list_noread,
+
+	.supports_cheri = riscv_supports_zcheripurecap,
 
 	.add_breakpoint = riscv_add_breakpoint,
 	.remove_breakpoint = riscv_remove_breakpoint,
@@ -5935,7 +5977,8 @@ struct target_type riscv_target = {
 	.commands = riscv_command_handlers,
 
 	.address_bits = riscv_xlen_nonconst,
-	.data_bits = riscv_data_bits
+	.data_bits = riscv_data_bits,
+	.cheri_capability_bits = riscv_cheri_capability_bits
 };
 
 /*** RISC-V Interface ***/

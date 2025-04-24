@@ -4066,6 +4066,8 @@ enum mem_access_result_type {
 			SKIPPED, "skipped (unsupported access size)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_XLEN_TOO_SHORT, \
 			SKIPPED, "skipped (xlen too short)") \
+	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_CLEN_NOT_MATCHED, \
+			SKIPPED, "skipped (clen not matched)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_TARGET_NOT_HALTED, \
 			SKIPPED, "skipped (target not halted)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_TOO_LARGE_ADDRESS, \
@@ -4098,6 +4100,8 @@ enum mem_access_result_type {
 			SKIPPED, "skipped (direct register write failed)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_ADDR_TO_CHERI_CAP_FAILED, \
 			SKIPPED, "skipped (address to CHERI capability conversion failed)") \
+	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_CHERI_UNSUPPORTED, \
+			SKIPPED, "skipped (unsupported for CHERI capability)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_FAILED, FAILED, "failed") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_FAILED_DM_ACCESS_FAILED, \
 			FAILED, "failed (DM register access failed)") \
@@ -4117,7 +4121,10 @@ enum mem_access_result_type {
 			FAILED, "failed (no forward progress)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_FAILED_FENCE_EXEC_FAILED, \
 			FAILED, "failed (fence execution failed)") \
-
+	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_FAILED_CHERI_ADDRESS_UNALIGNED_FAILED, \
+			FAILED, "failed (unaligned address for CHERI capability failed)") \
+	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED, \
+			FAILED, "failed (CHERI capability single read/write failed)") \
 
 #define MEM_ACCESS_RESULT_HANDLER(name, kind, msg) name,
 enum mem_access_result_enum {
@@ -4219,16 +4226,25 @@ static struct mem_access_result mem_should_skip_progbuf(struct target *target,
 				"target not halted.", access_type);
 		return mem_access_result(MEM_ACCESS_SKIPPED_TARGET_NOT_HALTED);
 	}
-	if (riscv_xlen(target) < args.size * 8) {
+	if (!riscv_mem_access_is_capability(args) &&
+			riscv_xlen(target) < args.size * 8) {
 		LOG_TARGET_DEBUG(target, "Skipping mem %s via progbuf - "
 				"XLEN (%d) is too short for %d-bit memory args.",
 				access_type, riscv_xlen(target), args.size * 8);
 		return mem_access_result(MEM_ACCESS_SKIPPED_XLEN_TOO_SHORT);
 	}
-	if (args.size > 8) {
+	if (!riscv_mem_access_is_capability(args) &&
+			args.size > 8) {
 		LOG_TARGET_DEBUG(target, "Skipping mem %s via progbuf - "
 				"unsupported size.", access_type);
 		return mem_access_result(MEM_ACCESS_SKIPPED_UNSUPPORTED_ACCESS_SIZE);
+	}
+	if (riscv_mem_access_is_capability(args) &&
+			riscv_clen(target) != args.size * 8) {
+		LOG_TARGET_DEBUG(target, "Skipping mem %s via progbuf - "
+				"CLEN (%d) is not matched for %d-bit memory args.",
+				access_type, riscv_clen(target), args.size * 8);
+		return mem_access_result(MEM_ACCESS_SKIPPED_CLEN_NOT_MATCHED);
 	}
 	if ((sizeof(args.address) * 8 > riscv_xlen(target))
 			&& (args.address >> riscv_xlen(target))) {
@@ -4248,6 +4264,12 @@ mem_should_skip_sysbus(struct target *target, const riscv_mem_access_args_t args
 	RISCV013_INFO(info);
 	const bool is_read = riscv_mem_access_is_read(args);
 	const char *const access_type = is_read ? "read" : "write";
+
+	if (riscv_mem_access_is_capability(args)) {
+		LOG_TARGET_DEBUG(target, "Skipping mem %s via system bus - "
+				"unsupported for CHERI capability.", access_type);
+		return mem_access_result(MEM_ACCESS_SKIPPED_CHERI_UNSUPPORTED);
+	}
 
 	if (!sba_supports_access(target, args.size)) {
 		LOG_TARGET_DEBUG(target, "Skipping mem %s via system bus - "
@@ -4280,6 +4302,12 @@ mem_should_skip_abstract(struct target *target, const riscv_mem_access_args_t ar
 
 	const bool is_read = riscv_mem_access_is_read(args);
 	const char *const access_type = is_read ? "read" : "write";
+
+	if (riscv_mem_access_is_capability(args)) {
+		LOG_TARGET_DEBUG(target, "Skipping mem %s via abstract access - "
+				"unsupported for CHERI capability.", access_type);
+		return mem_access_result(MEM_ACCESS_SKIPPED_CHERI_UNSUPPORTED);
+	}
 	if (args.size > 8) {
 		/* TODO: Add 128b support if it's ever used. Involves modifying
 				 read/write_abstract_arg() to work on two 64b values. */
@@ -5043,6 +5071,76 @@ read_memory_progbuf_inner_one(struct target *target, const riscv_mem_access_args
 	return read_word_from_s1(target, args, 0);
 }
 
+static struct mem_access_result
+read_memory_progbuf_capability_single(struct target *target, target_addr_t address,
+	riscv_reg_t *capability)
+{
+	LOG_TARGET_DEBUG(target, "reading capability from 0x%" TARGET_PRIxADDR, address);
+
+	assert(capability);
+
+	if (riscv013_reg_save(target, GDB_REGNO_S1) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	riscv_reg_t cap_address = { .value = address };
+	if (register_write_direct(target, GDB_REGNO_S1, cap_address)
+			!= ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	/* Convert address in CS1 to a valid capability */
+	if (riscv_supports_zcheripurecap(target) &&
+			cheri_address_to_pointer(target, GDB_REGNO_S1) != ERROR_OK) {
+		LOG_TARGET_DEBUG(target, "Address to pointer conversion fail.");
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+	}
+
+	struct riscv_program program;
+
+	riscv_program_init(&program, target);
+
+	if (riscv_program_lcr(&program, GDB_REGNO_S1, GDB_REGNO_S1, 0) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	if (register_read_direct(target, capability, GDB_REGNO_CS1) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	return mem_access_result(MEM_ACCESS_OK);
+}
+
+static struct mem_access_result
+read_memory_progbuf_capability(struct target *target, const riscv_mem_access_args_t args)
+{
+	assert(riscv_mem_access_is_read(args));
+	assert(riscv_mem_access_is_capability(args));
+
+	if (args.address & (cheri_capability_size(riscv_clen(target)) - 1))
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_ADDRESS_UNALIGNED_FAILED);
+
+	target_addr_t address = args.address;
+	uint8_t *read_buffer = (uint8_t *)args.read_buffer;
+	uint32_t cheri_cap_count = args.count;
+	while (cheri_cap_count--) {
+		riscv_reg_t value = {0};
+		struct mem_access_result result = read_memory_progbuf_capability_single(target, address, &value);
+		if (!is_mem_access_ok(result)) {
+			LOG_TARGET_ERROR(target, "Target %s: Failed to read capability from memory (addr=0x%" PRIx64 ")",
+				target_name(target), address);
+			return result;
+		}
+
+		LOG_TARGET_DEBUG(target, "addr=0x%" PRIx64 " data:0x%" PRIx64 " m:0x%" PRIx64 " t:%s",
+							address, value.value, value.meta, value.tag ? "valid" : "invalid");
+		buf_set_cheri_capability(read_buffer, value, riscv_clen(target));
+		read_buffer += buf_cheri_capability_size(riscv_clen(target));
+		address += args.size;
+	}
+
+	return mem_access_result(MEM_ACCESS_OK);
+}
+
 /**
  * Read the requested memory, silently handling memory access errors.
  */
@@ -5057,11 +5155,13 @@ read_memory_progbuf(struct target *target, const riscv_mem_access_args_t args)
 	if (execute_autofence(target) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_SKIPPED_FENCE_EXEC_FAILED);
 
-	struct mem_access_result result = (args.count == 1) ?
-			read_memory_progbuf_inner_one(target, args) :
-			read_memory_progbuf_inner(target, args);
-
-	return result;
+	if (riscv_mem_access_is_capability(args)) {
+		return read_memory_progbuf_capability(target, args);
+	} else {
+		return (args.count == 1) ?
+				read_memory_progbuf_inner_one(target, args) :
+				read_memory_progbuf_inner(target, args);
+	}
 }
 
 static struct mem_access_result
@@ -5111,6 +5211,7 @@ static struct mem_access_result
 access_memory_sysbus(struct target *target, const riscv_mem_access_args_t args)
 {
 	assert(riscv_mem_access_is_valid(args));
+	assert(!riscv_mem_access_is_capability(args));
 
 	struct mem_access_result skip_reason = mem_should_skip_sysbus(target, args);
 	if (!is_mem_access_ok(skip_reason))
@@ -5139,6 +5240,7 @@ static struct mem_access_result
 access_memory_abstract(struct target *target, const riscv_mem_access_args_t args)
 {
 	assert(riscv_mem_access_is_valid(args));
+	assert(!riscv_mem_access_is_capability(args));
 
 	struct mem_access_result skip_reason = mem_should_skip_abstract(target, args);
 	if (!is_mem_access_ok(skip_reason))
@@ -5691,11 +5793,81 @@ write_memory_progbuf_inner(struct target *target,
 }
 
 static struct mem_access_result
+write_memory_progbuf_capability_single(struct target *target, target_addr_t address,
+	const riscv_reg_t capability)
+{
+	LOG_TARGET_DEBUG(target, "writing capability to 0x%" TARGET_PRIxADDR, address);
+
+	if (riscv013_reg_save(target, GDB_REGNO_S0) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+	if (riscv013_reg_save(target, GDB_REGNO_S1) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	if (register_write_direct_value(target, GDB_REGNO_S0, address) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	if (cheri_address_to_pointer(target, GDB_REGNO_S0) != ERROR_OK) {
+		LOG_TARGET_DEBUG(target, "Address to pointer conversion fail.");
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+	}
+
+	if (register_write_direct(target, GDB_REGNO_CS1, capability) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	struct riscv_program program;
+	riscv_program_init(&program, target);
+	if (riscv_program_scr(&program, GDB_REGNO_S1, GDB_REGNO_S0, 0) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
+
+	return mem_access_result(MEM_ACCESS_OK);
+}
+
+static struct mem_access_result
+write_memory_progbuf_capability(struct target *target, const riscv_mem_access_args_t args)
+{
+	assert(riscv_mem_access_is_write(args));
+	assert(riscv_mem_access_is_capability(args));
+
+	if (args.address & (args.size - 1))
+		return mem_access_result(MEM_ACCESS_FAILED_CHERI_ADDRESS_UNALIGNED_FAILED);
+
+	target_addr_t address = args.address;
+	uint8_t *write_buffer = (uint8_t *)args.write_buffer;
+	uint32_t cheri_cap_count = args.count;
+	while (cheri_cap_count--) {
+		riscv_reg_t value = {0};
+		buf_get_cheri_capability(write_buffer, &value, riscv_clen(target));
+
+		LOG_TARGET_DEBUG(target, "Write capability to memory (addr=0x%" PRIx64 ")"
+						"(data:0x%" PRIx64 " m:0x%" PRIx64 " t:%s)", address, value.value, value.meta,
+						value.tag ? "valid" : "invalid");
+
+		struct mem_access_result result = write_memory_progbuf_capability_single(target, address, value);
+		if (!is_mem_access_ok(result)) {
+			LOG_TARGET_ERROR(target, "Target %s: Failed to write capability to memory (addr=0x%" PRIx64 ")",
+								target_name(target), address);
+			return result;
+		}
+		write_buffer += buf_cheri_capability_size(riscv_clen(target));
+		address += args.size;
+	}
+
+	return mem_access_result(MEM_ACCESS_OK);
+}
+
+static struct mem_access_result
 write_memory_progbuf(struct target *target, const riscv_mem_access_args_t args)
 {
 	assert(riscv_mem_access_is_write(args));
 
-	struct mem_access_result result = write_memory_progbuf_inner(target, args);
+	struct mem_access_result result = mem_access_result(MEM_ACCESS_FAILED);
+	result = riscv_mem_access_is_capability(args) ?
+		write_memory_progbuf_capability(target, args) :
+		write_memory_progbuf_inner(target, args);
+
 
 	if (execute_autofence(target) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_FAILED_FENCE_EXEC_FAILED);
