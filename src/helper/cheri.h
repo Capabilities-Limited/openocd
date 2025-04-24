@@ -143,4 +143,80 @@ static inline bool buf_get_cheri_capability_tag(const uint8_t *buffer, unsigned 
 
 	return buffer[tag_pos] != 0;
 }
+
+/**
+ * Convert the bitwise layout of a CHERI capability:
+ *   format for GDB --> internal OpenOCD representation
+ *
+ * Directly modifies the provided buffer.
+ */
+static inline void buf_cheri_capability_gdb_to_target(uint8_t *buffer, unsigned int clen)
+{
+	assert(clen == 64 || clen == 128);
+
+	uint8_t tag = buffer[0];
+	assert(tag == 0x0 || tag == 0x1);
+
+	buffer[0] = buffer[1];
+	buffer[1] = buffer[2];
+	buffer[2] = buffer[3];
+	buffer[3] = buffer[4];
+	buffer[4] = buffer[5];
+	buffer[5] = buffer[6];
+	buffer[6] = buffer[7];
+	buffer[7] = buffer[8];
+
+	if (clen == 128) {
+		buffer[8] = buffer[9];
+		buffer[9] = buffer[10];
+		buffer[10] = buffer[11];
+		buffer[11] = buffer[12];
+		buffer[12] = buffer[13];
+		buffer[13] = buffer[14];
+		buffer[14] = buffer[15];
+		buffer[15] = buffer[16];
+		buffer[16] = tag;
+	} else {
+		buffer[8] = tag;
+	}
+}
+
+/**
+ * Convert the bitwise layout of a CHERI capability:
+ *   internal OpenOCD representation --> format for GDB
+ *
+ * Directly modifies the provided buffer.
+ */
+static inline void buf_cheri_capability_target_to_gdb(uint8_t *buffer, unsigned int clen)
+{
+	assert(clen == 64 || clen == 128);
+
+	uint8_t tag;
+
+	if (clen == 128) {
+		tag = buffer[16];
+		buffer[16] = buffer[15];
+		buffer[15] = buffer[14];
+		buffer[14] = buffer[13];
+		buffer[13] = buffer[12];
+		buffer[12] = buffer[11];
+		buffer[11] = buffer[10];
+		buffer[10] = buffer[9];
+		buffer[9] = buffer[8];
+	} else {
+		tag = buffer[8];
+	}
+
+	assert(tag == 0x0 || tag == 0x1);
+	buffer[8] = buffer[7];
+	buffer[7] = buffer[6];
+	buffer[6] = buffer[5];
+	buffer[5] = buffer[4];
+	buffer[4] = buffer[3];
+	buffer[3] = buffer[2];
+	buffer[2] = buffer[1];
+	buffer[1] = buffer[0];
+	buffer[0] = tag;
+}
+
 #endif /* OPENOCD_HELPER_CHERI_H */

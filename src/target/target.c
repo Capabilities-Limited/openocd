@@ -31,6 +31,7 @@
 #endif
 
 #include <helper/align.h>
+#include <helper/cheri.h>
 #include <helper/list.h>
 #include <helper/nvp.h>
 #include <helper/time_support.h>
@@ -1305,6 +1306,34 @@ int target_write_phys_memory(struct target *target,
 	return target->type->write_phys_memory(target, address, size, count, buffer);
 }
 
+int target_read_cheri_capability_from_memory(struct target *target,
+		target_addr_t address, uint32_t count, uint8_t *buffer)
+{
+	if (!target_was_examined(target)) {
+		LOG_TARGET_ERROR(target, "Target not examined yet");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+	if (!target->type->read_cheri_capability_from_memory) {
+		LOG_TARGET_ERROR(target, "Target doesn't support read_cheri_capability_from_memory");
+		return ERROR_NOT_IMPLEMENTED;
+	}
+	return target->type->read_cheri_capability_from_memory(target, address, count, buffer);
+}
+
+int target_write_cheri_capability_to_memory(struct target *target,
+		target_addr_t address, uint32_t count, const uint8_t *buffer)
+{
+	if (!target_was_examined(target)) {
+		LOG_TARGET_ERROR(target, "Target not examined yet");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+	if (!target->type->write_cheri_capability_to_memory) {
+		LOG_TARGET_ERROR(target, "Target doesn't support write_cheri_capability_to_memory");
+		return ERROR_NOT_IMPLEMENTED;
+	}
+	return target->type->write_cheri_capability_to_memory(target, address, count, buffer);
+}
+
 int target_add_breakpoint(struct target *target,
 		struct breakpoint *breakpoint)
 {
@@ -1422,6 +1451,15 @@ bool target_supports_gdb_connection(const struct target *target)
 	return !!target->type->get_gdb_reg_list && !!target->gdb_max_connections;
 }
 
+bool target_supports_cheri(const struct target *target)
+{
+	/*
+	 * Assume the targets that don't provide supports_cheri()
+	 * do not support CHERI. */
+	return target->type->supports_cheri &&
+				target->type->supports_cheri(target);
+}
+
 int target_step(struct target *target,
 		bool current, target_addr_t address, bool handle_breakpoints)
 {
@@ -1477,6 +1515,13 @@ unsigned int target_data_bits(struct target *target)
 	if (target->type->data_bits)
 		return target->type->data_bits(target);
 	return 32;
+}
+
+unsigned int target_cheri_capability_bits(struct target *target)
+{
+	if (target->type->cheri_capability_bits)
+		return target->type->cheri_capability_bits(target);
+	return 0;
 }
 
 static int target_profiling(struct target *target, uint32_t *samples,

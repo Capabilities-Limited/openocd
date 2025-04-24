@@ -106,6 +106,12 @@ struct target_type {
 			struct reg **reg_list[], int *reg_list_size,
 			enum target_register_class reg_class);
 
+	/**
+	 * Target supports CHERI checking callback. Do @b not call this function
+	 * directly, use target_supports_cheri) instead.
+	 */
+	bool (*supports_cheri)(const struct target *target);
+
 	/* target memory access
 	* size: 1 = byte (8bit), 2 = half-word (16bit), 4 = word (32bit)
 	* count: number of items of <size>
@@ -137,6 +143,19 @@ struct target_type {
 	int (*blank_check_memory)(struct target *target,
 			struct target_memory_check_block *blocks, int num_blocks,
 			uint8_t erased_value);
+
+	/**
+	 * Target CHERI capability read callback.  Do @b not call this function
+	 * directly, use target_read_capability_from_memory() instead.
+	 */
+	int (*read_cheri_capability_from_memory)(struct target *target, target_addr_t address,
+			uint32_t count, uint8_t *buffer);
+	/**
+	 * Target CHERI capability write callback.  Do @b not call this function
+	 * directly, use target_write_capability_to_memory) instead.
+	 */
+	int (*write_cheri_capability_to_memory)(struct target *target, target_addr_t address,
+			uint32_t count, const uint8_t *buffer);
 
 	/*
 	 * target break-/watchpoint control
@@ -309,6 +328,11 @@ struct target_type {
 	 * will typically be 32 for 32-bit targets, and 64 for 64-bit targets. If
 	 * not implemented, it's assumed to be 32. */
 	unsigned int (*data_bits)(struct target *target);
+
+	/* Return the number of CHERI capability bits this target supports. This
+	 * will typically be 64 for 32-bit targets, and 128 for 64-bit targets. It
+	 * is 0 if not implemented or for non CHERI targets. */
+	unsigned int (*cheri_capability_bits)(struct target *target);
 };
 
 extern struct target_type aarch64_target;

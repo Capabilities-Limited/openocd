@@ -40,6 +40,7 @@
 #include <jtag/jtag.h>
 #include "rtos/rtos.h"
 #include "target/smp.h"
+#include <helper/cheri.h>
 
 /**
  * @file
@@ -121,6 +122,10 @@ static void gdb_log_callback(void *priv, const char *file, unsigned int line,
 
 static void gdb_sig_halted(struct connection *connection);
 
+static int decode_xfer_read(char const *buf, char **annex, int *ofs, unsigned int *len);
+static int decode_xfer_write(char const *buf, unsigned int buf_len, char **annex, int *ofs,
+		unsigned int *len, uint8_t **data);
+
 /* number of gdb connections, mainly to suppress gdb related debugging spam
  * in helper/log.c when no gdb connections are actually active */
 static int gdb_actual_connections;
@@ -148,6 +153,51 @@ static bool gdb_use_target_description = true;
 
 /* current processing free-run type, used by file-I/O */
 static char gdb_running_type;
+
+/**
+ * Add escape character for the binary data used for gdb transmission.
+ *
+ * @param[out] esc_bin Buffer to store binary data with escape character.
+ *                     The buffer size must be at least @p out_maxlen.
+ *                     2 times of @p count is recommended to be used.
+ * @param[in] bin Buffer with binary data without escape character.
+ * @param[in] count Number of bytes to convert.
+ * @param[in] out_maxlen Maximum number of @p esc_bin buffer.
+ *
+ * @returns The length of the converted binary excluding null-terminator or
+ *          0 if there is an error or @p count is 0. i.e. The content pointed
+ *          by @p esc_bin is useless.
+ */
+static size_t bin_escape(char *esc_bin, const uint8_t *bin, size_t count, size_t out_maxlen)
+{
+	uint8_t c;
+	size_t pkt_len = 0;
+
+	if (!bin || !esc_bin)
+		return 0;
+
+	while (count--) {
+		c = *(bin++);
+		switch (c) {
+			case '#': case '$': case '*': case '}':
+				if (pkt_len == out_maxlen)
+					return 0;
+				esc_bin[pkt_len++] = '}';
+
+				if (pkt_len == out_maxlen)
+					return 0;
+				esc_bin[pkt_len++] = c ^ 0x20;
+				break;
+			default:
+				if (pkt_len == out_maxlen)
+					return 0;
+				esc_bin[pkt_len++] = c;
+				break;
+		}
+	}
+
+	return pkt_len;
+}
 
 /* Find an available target in the SMP group that gdb is connected to. For
  * commands that affect an entire SMP group (like memory access and run control)
@@ -1228,14 +1278,29 @@ static void gdb_str_to_target(struct target *target,
 	int i;
 
 	uint8_t *buf;
+	uint8_t *cap_buf = NULL;
 	int buf_len;
 	buf = reg->value;
 	buf_len = DIV_ROUND_UP(reg->size, 8);
+
+	if (register_is_cheri_reg(reg)) {
+		cap_buf = buf_alloc_cheri_capability(1, target_cheri_capability_bits(target));
+		if (!cap_buf) {
+			LOG_ERROR("Out of memory allocating CHERI capability buffer");
+			return;
+		}
+		memcpy(cap_buf, reg->value, buf_len);
+		buf_cheri_capability_target_to_gdb(cap_buf, target_cheri_capability_bits(target));
+		buf = cap_buf;
+	}
 
 	for (i = 0; i < buf_len; i++) {
 		int j = gdb_reg_pos(target, i, buf_len);
 		tstr += sprintf(tstr, "%02x", buf[j]);
 	}
+
+	if (cap_buf)
+		free(cap_buf);
 }
 
 /* copy over in register buffer */
@@ -1256,6 +1321,40 @@ static void gdb_target_to_reg(struct target *target,
 		}
 
 		int j = gdb_reg_pos(target, i/2, str_len/2);
+		bin[j] = t;
+	}
+}
+
+/* copy over in CHERI register buffer */
+static void gdb_target_to_cheri_reg(struct target *target,
+		char const *tstr, int str_len, uint8_t *bin)
+{
+	if (str_len % 2) {
+		LOG_ERROR("BUG: gdb value with uneven number of characters encountered");
+		exit(-1);
+	}
+
+	int num_bytes = str_len / 2;
+	int i;
+	for (i = 1; i < num_bytes; i++) {
+		unsigned int t;
+		if (sscanf(tstr + i * 2, "%02x", &t) != 1) {
+			LOG_ERROR("BUG: unable to convert register value");
+			exit(-1);
+		}
+
+		int j = gdb_reg_pos(target, i - 1, num_bytes);
+		bin[j] = t;
+	}
+
+	if (num_bytes > 0) {
+		unsigned int t;
+		if (sscanf(tstr, "%02x", &t) != 1) {
+			LOG_ERROR("BUG: unable to convert register value");
+			exit(-1);
+		}
+
+		int j = gdb_reg_pos(target, num_bytes - 1, num_bytes);
 		bin[j] = t;
 	}
 }
@@ -1390,7 +1489,10 @@ static int gdb_set_registers_packet(struct connection *connection,
 			LOG_ERROR("BUG: register packet is too small for registers");
 
 		bin_buf = malloc(DIV_ROUND_UP(reg_list[i]->size, 8));
-		gdb_target_to_reg(target, packet_p, chars, bin_buf);
+		if (register_is_cheri_reg(reg_list[i]))
+			gdb_target_to_cheri_reg(target, packet_p, chars, bin_buf);
+		else
+			gdb_target_to_reg(target, packet_p, chars, bin_buf);
 
 		retval = reg_list[i]->type->set(reg_list[i], bin_buf);
 		if (retval != ERROR_OK && gdb_report_register_access_error) {
@@ -1485,7 +1587,10 @@ static int gdb_set_register_packet(struct connection *connection,
 	}
 	size_t chars = strlen(separator + 1);
 	uint8_t *bin_buf = malloc(chars / 2);
-	gdb_target_to_reg(target, separator + 1, chars, bin_buf);
+	if (register_is_cheri_reg(register_get_by_number(target->reg_cache, reg_num, false)))
+		gdb_target_to_cheri_reg(target, separator + 1, chars, bin_buf);
+	else
+		gdb_target_to_reg(target, separator + 1, chars, bin_buf);
 
 	if ((target->rtos) &&
 			(rtos_set_reg(connection, reg_num, bin_buf) == ERROR_OK)) {
@@ -1516,8 +1621,6 @@ static int gdb_set_register_packet(struct connection *connection,
 		free(reg_list);
 		return ERROR_SERVER_REMOTE_CLOSED;
 	}
-
-	gdb_target_to_reg(target, separator + 1, chars, bin_buf);
 
 	retval = reg_list[reg_num]->type->set(reg_list[reg_num], bin_buf);
 	if (retval != ERROR_OK && gdb_report_register_access_error) {
@@ -1751,6 +1854,137 @@ static int gdb_write_memory_binary_packet(struct connection *connection,
 	return ERROR_OK;
 }
 
+static int gdb_read_cheri_capability_packet(struct connection *connection,
+		char const *packet, int packet_size)
+{
+	struct target *target = get_available_target_from_connection(connection);
+
+	if (!target_supports_cheri(target)) {
+		LOG_TARGET_WARNING(target, "Cannot read a capability - the target does not support CHERI");
+		gdb_put_packet(connection, "", 0);
+		return ERROR_OK;
+	}
+
+	uint32_t len = 0;
+	int offset = 0;
+
+	/* skip command character "qXfer:capa:read:" */
+	packet += strlen("qXfer:capa:read:");
+	if (decode_xfer_read(packet, NULL, &offset, &len) < 0)
+		return gdb_error(connection, EINVAL);
+
+	const uint32_t cap_buf_len = buf_cheri_capability_size(target_cheri_capability_bits(target));
+	if (offset != 0) {
+		LOG_ERROR("Unexpected non-zero offset in qXfer:capa:read packet");
+		return gdb_error(connection, EINVAL);
+	}
+	if (len < cap_buf_len) {
+		LOG_ERROR("Insufficient length in qXfer:capa:read packet (less than %" PRIu32 ")", cap_buf_len);
+		return gdb_error(connection, EINVAL);
+	}
+
+	const uint64_t addr = strtoull(packet, NULL, 16);
+
+	uint8_t *buffer = buf_alloc_cheri_capability(1, target_cheri_capability_bits(target));
+	if (!buffer) {
+		LOG_ERROR("Out of memory");
+		return ERROR_FAIL;
+	}
+
+	LOG_DEBUG("addr: 0x%16.16" PRIx64 ", len: 0x%8.8" PRIx32 ", offset: 0x%8.8" PRIx32 ","
+				" cap buffer len: 0x%8.8" PRIx32 "", addr, len, offset, cap_buf_len);
+
+	int retval = target_read_cheri_capability_from_memory(target, addr, 1, buffer);
+	buf_cheri_capability_target_to_gdb(buffer, target_cheri_capability_bits(target));
+	if (retval == ERROR_OK) {
+		const uint32_t max_cap_esc_buf_len = cap_buf_len * 2;
+		const uint32_t max_cap_pkt_len = max_cap_esc_buf_len + 1;
+		char *pkt_buffer = malloc(max_cap_pkt_len);
+		if (!pkt_buffer) {
+			LOG_ERROR("Out of memory");
+			free(buffer);
+			return ERROR_FAIL;
+		}
+
+		const size_t cap_esc_buf_len = bin_escape(pkt_buffer + 1, buffer, cap_buf_len, max_cap_esc_buf_len);
+		if (cap_esc_buf_len >= cap_buf_len) {
+			/* Put 'l' to indicate it's the last packet as the capability
+			 * must be replied in a single packet.
+			 */
+			int cap_pkt_len = cap_esc_buf_len + 1;
+			pkt_buffer[0] = 'l';
+			gdb_put_packet(connection, pkt_buffer, cap_pkt_len);
+		} else {
+			retval = gdb_error(connection, EINVAL);
+		}
+
+		free(pkt_buffer);
+	} else {
+		retval = gdb_error(connection, retval);
+	}
+
+	free(buffer);
+
+	return retval;
+}
+
+static int gdb_write_cheri_capability_packet(struct connection *connection,
+		char const *packet, int packet_size)
+{
+	struct target *target = get_available_target_from_connection(connection);
+
+	if (!target_supports_cheri(target)) {
+		LOG_TARGET_WARNING(target, "Cannot write a capability - the target does not support CHERI");
+		gdb_put_packet(connection, "", 0);
+		return ERROR_OK;
+	}
+
+	uint8_t *buffer;
+	uint32_t len = 0;
+	int offset = 0;
+
+	/* skip command character "qXfer:capa:write:" */
+	packet += strlen("qXfer:capa:write:");
+	packet_size -= strlen("qXfer:capa:write:");
+	if (decode_xfer_write(packet, packet_size, NULL, &offset, &len, &buffer) < 0)
+		return gdb_error(connection, EPERM);
+
+	int retval;
+	const uint8_t cap_buf_len = buf_cheri_capability_size(target_cheri_capability_bits(target));
+	if (offset != 0) {
+		LOG_ERROR("Unexpected non-zero offset in qXfer:capa:write packet");
+		retval = gdb_error(connection, EINVAL);
+	} else if (len < cap_buf_len) {
+		LOG_ERROR("Insufficient length in qXfer:capa:write packet (less than %" PRIu32 ")", cap_buf_len);
+		retval = gdb_error(connection, EINVAL);
+	} else {
+		const uint64_t addr = strtoull(packet, NULL, 16);
+
+		LOG_DEBUG("addr: 0x%16.16" PRIx64 ", len: 0x%8.8" PRIx32 ", offset: 0x%8.8" PRIx32 ","
+					" cap buffer len: 0x%2.2x", addr, len, offset, cap_buf_len);
+
+		buf_cheri_capability_gdb_to_target(buffer, target_cheri_capability_bits(target));
+		retval = target_write_cheri_capability_to_memory(target, addr, 1, buffer);
+		if (retval == ERROR_OK) {
+			/* Reply ‘nn’. nn (hex encoded of a 8 bit data) is the number of bytes written.
+			 * This may be fewer bytes than supplied in the request.
+			 *
+			 * nn is cap_buf_len for capability written.
+			 */
+			const size_t hex_buffer_len = 3;
+			char hex_buffer[hex_buffer_len];
+			size_t pkt_len = hexify(hex_buffer, &cap_buf_len, sizeof(cap_buf_len), hex_buffer_len);
+			gdb_put_packet(connection, hex_buffer, pkt_len);
+		} else {
+			retval = gdb_error(connection, retval);
+		}
+	}
+
+	free(buffer);
+
+	return retval;
+}
+
 static int gdb_step_continue_packet(struct connection *connection,
 		char const *packet, int packet_size)
 {
@@ -1932,6 +2166,47 @@ static int decode_xfer_read(char const *buf, char **annex, int *ofs, unsigned in
 		*annex = strndup(buf, annex_end - buf);
 		if (!*annex)
 			return ERROR_FAIL;
+	}
+
+	return ERROR_OK;
+}
+
+static int decode_xfer_write(char const *buf, unsigned int buf_len, char **annex, int *ofs,
+		unsigned int *len, uint8_t **data)
+{
+	if (!buf || !ofs || !len)
+		return ERROR_FAIL;
+
+	/* xfer write format after write annex is :annex:offset:data…. */
+	/* Locate the annex. */
+	const char *annex_end = strchr(buf, ':');
+	if (!annex_end)
+		return ERROR_FAIL;
+
+	char *separator;
+	*ofs = strtoul(annex_end + 1, &separator, 16);
+
+	if (*separator != ':')
+		return ERROR_FAIL;
+
+	*len = buf_len - (separator + 1 - buf);
+
+	/* Extract the data if needed */
+	if (data) {
+		*data = malloc(*len);
+		if (!*data)
+			return ERROR_FAIL;
+		memcpy(*data, separator + 1, *len);
+	}
+
+	/* Extract the annex if needed */
+	if (annex) {
+		*annex = strndup(buf, annex_end - buf);
+		if (!*annex) {
+			if (data)
+				free(*data);
+			return ERROR_FAIL;
+		}
 	}
 
 	return ERROR_OK;
@@ -2945,10 +3220,13 @@ static int gdb_query_packet(struct connection *connection,
 			&buffer,
 			&pos,
 			&size,
-			"PacketSize=%x;qXfer:memory-map:read%c;qXfer:features:read%c;qXfer:threads:read+;QStartNoAckMode+;vContSupported+",
+			"PacketSize=%x;qXfer:memory-map:read%c;qXfer:features:read%c;qXfer:threads:read+;QStartNoAckMode+;vContSupported+"
+			"qXfer:capa:read%c;qXfer:capa:write%c;",
 			GDB_BUFFER_SIZE,
 			(gdb_use_memory_map && (flash_get_bank_count() > 0)) ? '+' : '-',
-			gdb_target_desc_supported ? '+' : '-');
+			gdb_target_desc_supported ? '+' : '-',
+			target_supports_cheri(target) ? '+' : '-',
+			target_supports_cheri(target) ? '+' : '-');
 
 		if (retval != ERROR_OK) {
 			gdb_send_error(connection, 01);
@@ -3028,6 +3306,10 @@ static int gdb_query_packet(struct connection *connection,
 		gdb_connection->noack_mode = 1;
 		gdb_put_packet(connection, "OK", 2);
 		return ERROR_OK;
+	} else if (strncmp(packet, "qXfer:capa:read:", 16) == 0) {
+		return gdb_read_cheri_capability_packet(connection, packet, packet_size);
+	} else if (strncmp(packet, "qXfer:capa:write:", 17) == 0) {
+		return gdb_write_cheri_capability_packet(connection, packet, packet_size);
 	} else if (target->type->gdb_query_custom) {
 		char *buffer = NULL;
 		int ret = target->type->gdb_query_custom(target, packet, &buffer);

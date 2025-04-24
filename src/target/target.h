@@ -530,6 +530,13 @@ int target_get_gdb_reg_list_noread(struct target *target,
 bool target_supports_gdb_connection(const struct target *target);
 
 /**
+ * Check if @a target supports CHERI.
+ *
+ * This routine is wrapper for target->type->target_supports_cheri.
+ */
+bool target_supports_cheri(const struct target *target);
+
+/**
  * Step the target.
  *
  * This routine is a wrapper for target->type->step.
@@ -625,6 +632,24 @@ int target_write_memory(struct target *target,
 int target_write_phys_memory(struct target *target,
 		target_addr_t address, uint32_t size, uint32_t count, const uint8_t *buffer);
 
+/**
+ * Read a CHERI capability from the memory of @a target at the @a address given.
+ * @a address must be aligned to the capability size.
+ *
+ * This routine is a wrapper for target->type->read_cheri_capability_from_memory.
+ */
+int target_read_cheri_capability_from_memory(struct target *target,
+		target_addr_t address, uint32_t count, uint8_t *buffer);
+
+/**
+ * Write a CHERI capability to the memory of @a target at the @a address given.
+ * @a address must be aligned to the capability size.
+ *
+ * This routine is wrapper for target->type->write_cheri_capability_to_memory.
+ */
+int target_write_cheri_capability_to_memory(struct target *target,
+		target_addr_t address, uint32_t count, const uint8_t *buffer);
+
 /*
  * Write to target memory using the virtual address.
  *
@@ -692,6 +717,14 @@ unsigned int target_address_bits(struct target *target);
  * This routine is a wrapper for target->type->data_bits.
  */
 unsigned int target_data_bits(struct target *target);
+
+/**
+ * Return the number of CHERI capability bits if this target supports CHERI.
+ * It returns number of bit for CHERI capability excluding the tag bit.
+ *
+ * This routine is a wrapper for target->type->cheri_capability_bits.
+ */
+unsigned int target_cheri_capability_bits(struct target *target);
 
 /** Return the *name* of this targets current state */
 const char *target_state_name(const struct target *target);
