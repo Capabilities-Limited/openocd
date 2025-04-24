@@ -12,6 +12,7 @@
 
 #include "debug_defines.h"
 #include "encoding.h"
+#include "encoding_cheri.h"
 
 /* Program interface. */
 int riscv_program_init(struct riscv_program *p, struct target *target)

@@ -4,6 +4,7 @@
 #define OPENOCD_TARGET_RISCV_GDB_REGS_H
 
 #include "encoding.h"
+#include "encoding_cheri.h"
 
 /* gdb's register list is defined in riscv_gdb_reg_names gdb/riscv-tdep.c in
  * its source tree. We must interpret the numbers the same here. */

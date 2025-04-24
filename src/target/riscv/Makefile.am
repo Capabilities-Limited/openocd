@@ -6,6 +6,7 @@ noinst_LTLIBRARIES += %D%/libriscv.la
        %D%/debug_defines.h \
        %D%/debug_reg_printer.h \
        %D%/encoding.h \
+       %D%/encoding_cheri.h \
        %D%/field_helpers.h \
        %D%/gdb_regs.h \
        %D%/opcodes.h \

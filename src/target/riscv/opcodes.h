@@ -4,6 +4,7 @@
 #define OPENOCD_TARGET_RISCV_OPCODES_H
 
 #include "encoding.h"
+#include "encoding_cheri.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>

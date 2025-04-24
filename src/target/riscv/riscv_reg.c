@@ -92,6 +92,7 @@ static const char * const default_reg_names[GDB_REGNO_COUNT] = {
 
 	#define DECLARE_CSR(csr_name, number)[(number) + GDB_REGNO_CSR0] = #csr_name,
 	#include "encoding.h"
+	#include "encoding_cheri.h"
 	#undef DECLARE_CSR
 };
 
@@ -358,6 +359,7 @@ static bool is_known_standard_csr(unsigned int csr_num)
 	static const bool is_csr_in_buf[GDB_REGNO_CSR4095 - GDB_REGNO_CSR0 + 1] = {
 		#define DECLARE_CSR(csr_name, number)[number] = true,
 		#include "encoding.h"
+		#include "encoding_cheri.h"
 		#undef DECLARE_CSR
 	};
 	assert(csr_num < ARRAY_SIZE(is_csr_in_buf));
