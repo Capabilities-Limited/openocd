@@ -1494,6 +1494,75 @@ static int cheri_gpr_read_progbuf(struct target *target, riscv_reg_t *value,
 	return ERROR_OK;
 }
 
+static int cheri_csr_read_progbuf(struct target *target, riscv_reg_t *value,
+		enum gdb_regno number)
+{
+	const unsigned int csrreg = number - GDB_REGNO_CSR0;
+	assert(target->state == TARGET_HALTED);
+	assert(csrreg == CSR_DPC ||
+			csrreg == CSR_DSCRATCH0 ||
+			csrreg == CSR_DSCRATCH1 ||
+			csrreg == CSR_MTVEC ||
+			csrreg == CSR_MSCRATCH ||
+			csrreg == CSR_MEPC ||
+			csrreg == CSR_STVEC ||
+			csrreg == CSR_SSCRATCH ||
+			csrreg == CSR_SEPC ||
+			csrreg == CSR_JVT ||
+			csrreg == CSR_DDC ||
+			csrreg == CSR_DDDC ||
+			csrreg == CSR_DINFC);
+
+	RISCV013_INFO(info);
+
+	if (riscv013_reg_save(target, GDB_REGNO_S0) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Read value */
+	struct riscv_program program;
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, csrr(S0, csrreg)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return ERROR_FAIL;
+	if (register_read_abstract(target, &value->value, S0) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Read meta */
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, gchi(S1, S0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrw(S1, info->dataaddr)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return ERROR_FAIL;
+	if (read_abstract_arg(target, &value->meta, 0, riscv_xlen(target)) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Read tag */
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, gctag(S1, S0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrw(S1, info->dataaddr)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return ERROR_FAIL;
+	riscv_reg_value_t tag;
+	if (read_abstract_arg(target, &tag, 0, riscv_xlen(target)) != ERROR_OK)
+		return ERROR_FAIL;
+	value->tag = tag;
+
+	return ERROR_OK;
+}
+
 /**
  * This function reads a register by writing a program to program buffer and
  * executing it.
@@ -1503,12 +1572,16 @@ static int register_read_progbuf(struct target *target, riscv_reg_t *value,
 {
 	assert(target->state == TARGET_HALTED);
 
-	if (number >= GDB_REGNO_FPR0 && number <= GDB_REGNO_FPR31)
+	if (number >= GDB_REGNO_FPR0 && number <= GDB_REGNO_FPR31) {
 		return fpr_read_progbuf(target, &value->value, number);
-	else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095)
-		return csr_read_progbuf(target, &value->value, number);
-	else if (riscv_reg_gdb_regno_is_cheri_gpr(number))
+	} else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095) {
+		if (riscv_reg_gdb_regno_is_cheri_csr(target, number))
+			return cheri_csr_read_progbuf(target, value, number);
+		else
+			return csr_read_progbuf(target, &value->value, number);
+	} else if (riscv_reg_gdb_regno_is_cheri_gpr(number)) {
 		return cheri_gpr_read_progbuf(target, value, number);
+	}
 
 	LOG_TARGET_ERROR(target, "Unexpected read of %s via program buffer.",
 			riscv_reg_gdb_regno_name(target, number));
@@ -1746,6 +1819,134 @@ static int cheri_gpr_write_progbuf(struct target *target, enum gdb_regno number,
 	return ERROR_OK;
 }
 
+static int cheri_csr_write_progbuf(struct target *target, enum gdb_regno number,
+		riscv_reg_t value)
+{
+	const unsigned int csrreg = number - GDB_REGNO_CSR0;
+	assert(target->state == TARGET_HALTED);
+	assert(csrreg == CSR_DPC ||
+			csrreg == CSR_DSCRATCH0 ||
+			csrreg == CSR_DSCRATCH1 ||
+			csrreg == CSR_MTVEC ||
+			csrreg == CSR_MSCRATCH ||
+			csrreg == CSR_MEPC ||
+			csrreg == CSR_STVEC ||
+			csrreg == CSR_SSCRATCH ||
+			csrreg == CSR_SEPC ||
+			csrreg == CSR_JVT ||
+			csrreg == CSR_DDC ||
+			csrreg == CSR_DDDC ||
+			csrreg == CSR_DINFC);
+
+	RISCV013_INFO(info);
+
+	if (riscv013_reg_save(target, GDB_REGNO_S0) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Write value */
+	if (register_write_abstract(target, GDB_REGNO_S0, value.value) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Mask out the CT-bit and M-bit from the meta if a valid tag needs to be restored as
+	 * cbld is used to restore the tag bit from dinfc. However, cbld will clear the tag if
+	 * cs2 (restored capability) has CT-bit and M-bit. The CT-bit and M-bit will then
+	 * restored by scmode and sentry instructions. */
+	bool ct_bit_valid = false;
+	bool m_bit_valid = false;
+	if (value.tag) {
+		/* Handle CT-bit  */
+		riscv_cheri_meta_t ct_bit_mask = (riscv_clen(target) == 128) ? CLEN_128_CAP_CT : CLEN_64_CAP_CT;
+		ct_bit_valid = value.meta & ct_bit_mask;
+		if (ct_bit_valid)
+			value.meta &= ~ct_bit_mask;
+
+		/* Handle M-bit if target supports zcherihybrid as the M-bit of dinfc may be zero and it may cause
+		 * cbld clear the tag
+		 * TODO: Special M-bit handling as the tag is cleared by cbld if M-bit is 1 in cs2 but M-bit is
+		 * 0 in cs1 on the testing platform. This handling may be removed in future if cbld tag clear
+		 * is clarified as the tag clearing for this specific case is not mentioned in CHERI extension
+		 * specification */
+		if (riscv_supports_zcherihybrid(target)) {
+			if (riscv_clen(target) == 128) {
+				m_bit_valid = value.meta & CLEN_128_CAP_M;
+				if (m_bit_valid)
+					value.meta &= ~CLEN_128_CAP_M;
+			} else { /* CLEN == 64 */
+				m_bit_valid =
+					((value.meta & CLEN_64_CAP_AP_M_QUADRANT_MASK) == CLEN_64_CAP_AP_M_QUADRANT_EXE_CAP) &&
+					((value.meta & CLEN_64_CAP_AP_M_BIT0));
+				if (m_bit_valid)
+					value.meta &= ~CLEN_64_CAP_AP_M_BIT0;
+			}
+		}
+	}
+
+	/* Write meta */
+	if (write_abstract_arg(target, 0, value.meta, riscv_xlen(target)) != ERROR_OK)
+		return ERROR_FAIL;
+
+	struct riscv_program program;
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrr(S1, info->dataaddr)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, schi(S0, S0, S1)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Write tag and restore CT-bit and M-bit */
+	if (value.tag) {
+		riscv_program_init(&program, target);
+		if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+			return ERROR_FAIL;
+		if (riscv_program_insert(&program, csrr(S1, CSR_DINFC)) != ERROR_OK)
+			return ERROR_FAIL;
+		if (riscv_program_insert(&program, cbld(S0, S1, S0)) != ERROR_OK)
+			return ERROR_FAIL;
+		if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+			return ERROR_FAIL;
+		if (riscv_program_exec(&program, target) != ERROR_OK)
+			return ERROR_FAIL;
+
+		/* Set M-bit if it's valid */
+		if (m_bit_valid) {
+			riscv_program_init(&program, target);
+			if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_insert(&program, addi(S1, 0, 1)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_insert(&program, scmode(S0, S0, S1)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_exec(&program, target) != ERROR_OK)
+				return ERROR_FAIL;
+		}
+
+		/* Set CT-bit if it's valid */
+		if (ct_bit_valid) {
+			riscv_program_init(&program, target);
+			if (riscv_program_insert(&program, sentry(S0, S0)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_exec(&program, target) != ERROR_OK)
+				return ERROR_FAIL;
+		}
+	}
+
+	/* Write CSR */
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, csrw(S0, csrreg)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return ERROR_FAIL;
+
+	return ERROR_OK;
+}
+
 /**
  * This function writes a register by writing a program to program buffer and
  * executing it.
@@ -1755,16 +1956,20 @@ static int register_write_progbuf(struct target *target, enum gdb_regno number,
 {
 	assert(target->state == TARGET_HALTED);
 
-	if (number >= GDB_REGNO_FPR0 && number <= GDB_REGNO_FPR31)
+	if (number >= GDB_REGNO_FPR0 && number <= GDB_REGNO_FPR31) {
 		return fpr_write_progbuf(target, number, value.value);
-	else if (number == GDB_REGNO_VTYPE)
+	} else if (number == GDB_REGNO_VTYPE) {
 		return vtype_write_progbuf(target, value.value);
-	else if (number == GDB_REGNO_VL)
+	} else if (number == GDB_REGNO_VL) {
 		return vl_write_progbuf(target, value.value);
-	else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095)
-		return csr_write_progbuf(target, number, value.value);
-	else if (riscv_reg_gdb_regno_is_cheri_gpr(number))
+	} else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095) {
+		if (riscv_reg_gdb_regno_is_cheri_csr(target, number))
+			return cheri_csr_write_progbuf(target, number, value);
+		else
+			return csr_write_progbuf(target, number, value.value);
+	} else if (riscv_reg_gdb_regno_is_cheri_gpr(number)) {
 		return cheri_gpr_write_progbuf(target, number, value);
+	}
 
 	LOG_TARGET_ERROR(target, "Unexpected write to %s via program buffer.",
 			riscv_reg_gdb_regno_name(target, number));
@@ -5363,12 +5568,6 @@ int riscv013_get_register(struct target *target,
 		return ERROR_OK;
 	}
 
-	if (rid == GDB_REGNO_DDDC) {
-		LOG_TARGET_ERROR(target, "Not Yet Support accessing DDC CSR");
-		value->value = 0;
-		return ERROR_OK;
-	}
-
 	LOG_TARGET_DEBUG(target, "reading register %s",	riscv_reg_gdb_regno_name(target, rid));
 
 	if (dm013_select_target(target) != ERROR_OK)
@@ -5385,12 +5584,6 @@ int riscv013_get_register(struct target *target,
 int riscv013_set_register(struct target *target, enum gdb_regno rid,
 		riscv_reg_t value)
 {
-	if (rid == GDB_REGNO_DDDC) {
-		LOG_TARGET_ERROR(target, "Not Yet Support accessing DDC CSR");
-		return ERROR_OK;
-	}
-
-
 	LOG_TARGET_DEBUG(target, "writing 0x%" PRIx64 " to register %s",
 			value.value, riscv_reg_gdb_regno_name(target, rid));
 
