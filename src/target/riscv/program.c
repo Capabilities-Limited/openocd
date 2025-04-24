@@ -195,6 +195,11 @@ int riscv_program_addi(struct riscv_program *p, enum gdb_regno d, enum gdb_regno
 	return riscv_program_insert(p, addi(d, s, u));
 }
 
+int riscv_program_caddi(struct riscv_program *p, enum gdb_regno d, enum gdb_regno s, int16_t u)
+{
+	return riscv_program_insert(p, caddi(d, s, u));
+}
+
 int riscv_program_insert(struct riscv_program *p, riscv_insn_t i)
 {
 	if (p->instruction_count >= riscv_progbuf_size(p->target)) {

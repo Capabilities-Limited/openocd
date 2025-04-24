@@ -74,5 +74,6 @@ int riscv_program_fence_rw_rw(struct riscv_program *p);
 int riscv_program_ebreak(struct riscv_program *p);
 
 int riscv_program_addi(struct riscv_program *p, enum gdb_regno d, enum gdb_regno s, int16_t i);
+int riscv_program_caddi(struct riscv_program *p, enum gdb_regno d, enum gdb_regno s, int16_t i);
 
 #endif /* OPENOCD_TARGET_RISCV_PROGRAM_H */

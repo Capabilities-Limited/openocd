@@ -4084,12 +4084,20 @@ enum mem_access_result_type {
 			SKIPPED, "skipped (unknown sysbus version)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_PROGRAM_WRITE_FAILED, \
 			SKIPPED, "skipped (program write failed)") \
+	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_SAVE_REGISTERS_FAILED, \
+			SKIPPED, "skipped (save registers failed)") \
+	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_SETUP_REGISTERS_FAILED, \
+			SKIPPED, "skipped (setup registers failed)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_PROGBUF_FILL_FAILED, \
 			SKIPPED, "skipped (progbuf fill failed)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_WRITE_ABSTRACT_ARG_FAILED, \
 			SKIPPED, "skipped (abstract command argument write failed)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_PRIV_MOD_FAILED, \
 			SKIPPED, "skipped (privilege modification failed)") \
+	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_DIRECT_REGISTER_WRITE_FAILED, \
+			SKIPPED, "skipped (direct register write failed)") \
+	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_SKIPPED_ADDR_TO_CHERI_CAP_FAILED, \
+			SKIPPED, "skipped (address to CHERI capability conversion failed)") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_FAILED, FAILED, "failed") \
 	MEM_ACCESS_RESULT_HANDLER(MEM_ACCESS_FAILED_DM_ACCESS_FAILED, \
 			FAILED, "failed (DM register access failed)") \
@@ -4448,16 +4456,28 @@ write_memory_abstract(struct target *target, const riscv_mem_access_args_t args)
 	return mem_access_result(MEM_ACCESS_OK);
 }
 
-/**
- * This function is used to start the memory-reading pipeline.
- * The pipeline looks like this:
- * memory -> s1 -> dm_data[0:1] -> debugger
- * Prior to calling it, the program buffer should contain the appropriate
- * program.
- * This function sets DM_ABSTRACTAUTO_AUTOEXECDATA to trigger second stage of the
- * pipeline (s1 -> dm_data[0:1]) whenever dm_data is read.
- */
-static int read_memory_progbuf_inner_startup(struct target *target,
+static int cheri_address_to_pointer(struct target *target, enum gdb_regno number)
+{
+	assert(number <= GDB_REGNO_XPR31);
+
+	const unsigned int addrreg = number;
+	const unsigned int treg = (addrreg == S0) ? S1 : S0;
+
+	struct riscv_program program;
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, csrrw(treg, treg, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrr(treg, CSR_DINFC)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, scaddr(addrreg, treg, addrreg)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrrw(treg, treg, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+
+	return riscv_program_exec(&program, target);
+}
+
+static int read_memory_progbuf_inner_setup_registers(struct target *target,
 		target_addr_t address, uint32_t increment, uint32_t index)
 {
 	/* s0 holds the next address to read from.
@@ -4472,6 +4492,62 @@ static int read_memory_progbuf_inner_startup(struct target *target,
 			register_write_direct_value(target, GDB_REGNO_A0, index) != ERROR_OK)
 		return ERROR_FAIL;
 
+	if (riscv_supports_zcheripurecap(target)) {
+		if (cheri_address_to_pointer(target, GDB_REGNO_S0) != ERROR_OK) {
+			LOG_TARGET_DEBUG(target, "Address to pointer conversion fail.");
+			return ERROR_FAIL;
+		}
+	}
+
+	return ERROR_OK;
+}
+
+static int read_memory_progbuf_inner_fill_progbuf(struct target *target,
+		uint32_t increment, uint32_t size)
+{
+	const bool is_repeated_read = increment == 0;
+	struct riscv_program program;
+
+	riscv_program_init(&program, target);
+	if (riscv_program_load(&program, GDB_REGNO_S1, GDB_REGNO_S0, 0, size) != ERROR_OK)
+		return ERROR_FAIL;
+	if (is_repeated_read) {
+		if (riscv_program_addi(&program, GDB_REGNO_A0, GDB_REGNO_A0, 1)
+				!= ERROR_OK)
+			return ERROR_FAIL;
+	} else {
+		if (riscv_supports_zcheripurecap(target)) {
+			if (riscv_program_caddi(&program, GDB_REGNO_S0, GDB_REGNO_S0, increment)
+					!= ERROR_OK)
+				return ERROR_FAIL;
+		} else {
+			if (riscv_program_addi(&program, GDB_REGNO_S0, GDB_REGNO_S0, increment)
+					!= ERROR_OK)
+				return ERROR_FAIL;
+		}
+	}
+	if (riscv_program_ebreak(&program) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_write(&program) != ERROR_OK)
+		return ERROR_FAIL;
+
+	return ERROR_OK;
+}
+
+/**
+ * This function is used to start the memory-reading pipeline.
+ * The pipeline looks like this:
+ * memory -> s1 -> dm_data[0:1] -> debugger
+ *
+ * Pre-conditions:
+ * 1. The program buffer should contain the appropriate program.
+ * 2. program registers must be initialized.
+ *
+ * This function sets DM_ABSTRACTAUTO_AUTOEXECDATA to trigger second stage of the
+ * pipeline (s1 -> dm_data[0:1]) whenever dm_data is read.
+ */
+static int read_memory_progbuf_inner_startup(struct target *target)
+{
 	/* AC_ACCESS_REGISTER_POSTEXEC is used to trigger first stage of the
 	 * pipeline (memory -> s1) whenever this command is executed.
 	 */
@@ -4483,25 +4559,21 @@ static int read_memory_progbuf_inner_startup(struct target *target,
 		return ERROR_FAIL;
 	/* TODO: we need to modify error handling here. */
 	/* NOTE: in case of timeout cmderr is set to CMDERR_NONE */
-
 	/* First read has just triggered. Result is in s1.
 	 * dm_data registers contain the previous value of s1 (garbage).
 	 */
 	if (dm_write(target, DM_ABSTRACTAUTO,
 				set_field(0, DM_ABSTRACTAUTO_AUTOEXECDATA, 1)) != ERROR_OK)
 		return ERROR_FAIL;
-
 	/* Read garbage from dm_data0, which triggers another execution of the
 	 * program. Now dm_data contains the first good result (from s1),
 	 * and s1 the next memory value.
 	 */
 	if (dm_read_exec(target, NULL, DM_DATA0) != ERROR_OK)
 		goto clear_abstractauto_and_fail;
-
 	uint32_t abstractcs;
 	if (wait_for_idle(target, &abstractcs) != ERROR_OK)
 		goto clear_abstractauto_and_fail;
-
 	cmderr = get_field32(abstractcs, DM_ABSTRACTCS_CMDERR);
 	switch (cmderr) {
 	case CMDERR_NONE:
@@ -4514,6 +4586,7 @@ static int read_memory_progbuf_inner_startup(struct target *target,
 		riscv013_clear_abstract_error(target);
 		goto clear_abstractauto_and_fail;
 	}
+
 clear_abstractauto_and_fail:
 	dm_write(target, DM_ABSTRACTAUTO, 0);
 	return ERROR_FAIL;
@@ -4579,8 +4652,17 @@ static int read_memory_progbuf_inner_on_ac_busy(struct target *target,
 			TARGET_PRIxADDR " and 0x%" TARGET_PRIxADDR ".",
 			args.address + args.increment * next_index,
 			args.address + args.increment * (next_index + 1));
-	return read_memory_progbuf_inner_startup(target, args.address,
-			args.increment, next_index);
+	if (read_memory_progbuf_inner_setup_registers(target, args.address,
+			args.increment, next_index) != ERROR_OK)
+		return ERROR_FAIL;
+
+	if (riscv_supports_zcheripurecap(target)) {
+		if (read_memory_progbuf_inner_fill_progbuf(target,
+				args.increment, args.size) != ERROR_OK)
+			return ERROR_FAIL;
+	}
+
+	return read_memory_progbuf_inner_startup(target);
 }
 
 /**
@@ -4599,8 +4681,18 @@ static int read_memory_progbuf_inner_on_dmi_busy(struct target *target,
 
 	if (dm_write(target, DM_ABSTRACTAUTO, 0) != ERROR_OK)
 		return ERROR_FAIL;
-	return read_memory_progbuf_inner_startup(target, args.address,
-			args.increment, next_start_index);
+
+	if (read_memory_progbuf_inner_setup_registers(target, args.address,
+			args.increment, next_start_index) != ERROR_OK)
+		return ERROR_FAIL;
+
+	if (riscv_supports_zcheripurecap(target)) {
+		if (read_memory_progbuf_inner_fill_progbuf(target,
+				args.increment, args.size) != ERROR_OK)
+			return ERROR_FAIL;
+	}
+
+	return read_memory_progbuf_inner_startup(target);
 }
 
 /**
@@ -4756,7 +4848,8 @@ static int read_memory_progbuf_inner_try_to_read(struct target *target,
 }
 
 /**
- * read_memory_progbuf_inner_startup() must be called before calling this function
+ * read_memory_progbuf_inner_setup_registers(), read_memory_progbuf_inner_fill_progbuf()
+ * and read_memory_progbuf_inner_startup() must be called before calling this function
  * with the address argument equal to curr_target_address.
  */
 static int read_memory_progbuf_inner_ensure_forward_progress(struct target *target,
@@ -4834,8 +4927,8 @@ static struct mem_access_result read_word_from_s1(struct target *target,
 	return mem_access_result(MEM_ACCESS_OK);
 }
 
-static int read_memory_progbuf_inner_fill_progbuf(struct target *target,
-		uint32_t increment, uint32_t size)
+static int read_memory_progbuf_inner_save_registers(struct target *target,
+		uint32_t increment)
 {
 	const bool is_repeated_read = increment == 0;
 
@@ -4844,26 +4937,6 @@ static int read_memory_progbuf_inner_fill_progbuf(struct target *target,
 	if (riscv013_reg_save(target, GDB_REGNO_S1) != ERROR_OK)
 		return ERROR_FAIL;
 	if (is_repeated_read &&	riscv013_reg_save(target, GDB_REGNO_A0) != ERROR_OK)
-		return ERROR_FAIL;
-
-	struct riscv_program program;
-
-	riscv_program_init(&program, target);
-	if (riscv_program_load(&program, GDB_REGNO_S1, GDB_REGNO_S0, 0, size) != ERROR_OK)
-		return ERROR_FAIL;
-	if (is_repeated_read) {
-		if (riscv_program_addi(&program, GDB_REGNO_A0, GDB_REGNO_A0, 1)
-				!= ERROR_OK)
-			return ERROR_FAIL;
-	} else {
-		if (riscv_program_addi(&program, GDB_REGNO_S0, GDB_REGNO_S0,
-					increment)
-				!= ERROR_OK)
-			return ERROR_FAIL;
-	}
-	if (riscv_program_ebreak(&program) != ERROR_OK)
-		return ERROR_FAIL;
-	if (riscv_program_write(&program) != ERROR_OK)
 		return ERROR_FAIL;
 
 	return ERROR_OK;
@@ -4880,12 +4953,18 @@ read_memory_progbuf_inner(struct target *target, const riscv_mem_access_args_t a
 	assert(riscv_mem_access_is_read(args));
 	assert(args.count > 1 && "If count == 1, read_memory_progbuf_inner_one must be called");
 
+	if (read_memory_progbuf_inner_save_registers(target, args.increment) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_SKIPPED_SAVE_REGISTERS_FAILED);
+
+	if (read_memory_progbuf_inner_setup_registers(target, args.address,
+			args.increment, /*index*/ 0) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_SKIPPED_SETUP_REGISTERS_FAILED);
+
 	if (read_memory_progbuf_inner_fill_progbuf(target,
 			args.increment, args.size) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_SKIPPED_PROGBUF_FILL_FAILED);
 
-	if (read_memory_progbuf_inner_startup(target, args.address,
-			args.increment, /*index*/ 0) != ERROR_OK)
+	if (read_memory_progbuf_inner_startup(target) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_FAILED_PROGBUF_STARTUP_FAILED);
 	/* The program in program buffer is executed twice during
 	 * read_memory_progbuf_inner_startup().
@@ -4940,26 +5019,25 @@ read_memory_progbuf_inner_one(struct target *target, const riscv_mem_access_args
 	if (riscv013_reg_save(target, GDB_REGNO_S1) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_SKIPPED_REG_SAVE_FAILED);
 
+	if (register_write_direct_value(target, GDB_REGNO_S1, args.address)
+			!= ERROR_OK)
+		return mem_access_result(MEM_ACCESS_SKIPPED_DIRECT_REGISTER_WRITE_FAILED);
+
+	/* Convert address in CS1 to a valid capability */
+	if (riscv_supports_zcheripurecap(target) &&
+			cheri_address_to_pointer(target, GDB_REGNO_S1) != ERROR_OK) {
+		LOG_TARGET_DEBUG(target, "Address to pointer conversion fail.");
+		return mem_access_result(MEM_ACCESS_SKIPPED_ADDR_TO_CHERI_CAP_FAILED);
+	}
+
 	struct riscv_program program;
 
 	riscv_program_init(&program, target);
 	if (riscv_program_load(&program, GDB_REGNO_S1, GDB_REGNO_S1,
-			/* offset = */ 0, args.size) != ERROR_OK
-			|| riscv_program_ebreak(&program) != ERROR_OK)
+			/* offset = */ 0, args.size) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_SKIPPED_PROGBUF_FILL_FAILED);
 
-	if (riscv_program_write(&program) != ERROR_OK)
-		return mem_access_result(MEM_ACCESS_SKIPPED_PROGRAM_WRITE_FAILED);
-
-	/* Write address to S1, and execute buffer. */
-	if (write_abstract_arg(target, /* index = */ 0,
-			args.address, riscv_xlen(target)) != ERROR_OK)
-		return mem_access_result(MEM_ACCESS_SKIPPED_WRITE_ABSTRACT_ARG_FAILED);
-	uint32_t command = riscv013_access_register_command(target, GDB_REGNO_S1,
-			riscv_xlen(target), AC_ACCESS_REGISTER_WRITE |
-			AC_ACCESS_REGISTER_TRANSFER | AC_ACCESS_REGISTER_POSTEXEC);
-	uint32_t cmderr;
-	if (riscv013_execute_abstract_command(target, command, &cmderr) != ERROR_OK)
+	if (riscv_program_exec(&program, target) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_FAILED_EXECUTE_ABSTRACT_FAILED);
 
 	return read_word_from_s1(target, args, 0);
@@ -4979,9 +5057,11 @@ read_memory_progbuf(struct target *target, const riscv_mem_access_args_t args)
 	if (execute_autofence(target) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_SKIPPED_FENCE_EXEC_FAILED);
 
-	return (args.count == 1) ?
+	struct mem_access_result result = (args.count == 1) ?
 			read_memory_progbuf_inner_one(target, args) :
 			read_memory_progbuf_inner(target, args);
+
+	return result;
 }
 
 static struct mem_access_result
@@ -5324,25 +5404,64 @@ static int write_memory_bus_v1(struct target *target, const riscv_mem_access_arg
 	return ERROR_OK;
 }
 
-/**
- * This function is used to start the memory-writing pipeline.
- * As part of the process, the function writes the first item and waits for completion,
- * so forward progress is ensured.
- * The pipeline looks like this:
- * debugger -> dm_data[0:1] -> s1 -> memory
- * Prior to calling it, the program buffer should contain the appropriate
- * program.
- * This function sets DM_ABSTRACTAUTO_AUTOEXECDATA to trigger second stage of the
- * pipeline (dm_data[0:1] -> s1) whenever dm_data is written.
- */
-static int write_memory_progbuf_startup(struct target *target, target_addr_t *address_p,
-		const uint8_t *buffer, uint32_t size)
+static int write_memory_progbuf_setup_registers(struct target *target, target_addr_t *address_p)
 {
 	/* TODO: There is potential to gain some performance if the operations below are
 	 * executed inside the first DMI batch (not separately). */
 	if (register_write_direct_value(target, GDB_REGNO_S0, *address_p) != ERROR_OK)
 		return ERROR_FAIL;
 
+	if (riscv_supports_zcheripurecap(target)) {
+		if (cheri_address_to_pointer(target, GDB_REGNO_S0) != ERROR_OK) {
+			LOG_TARGET_DEBUG(target, "Address to pointer conversion fail.");
+			return ERROR_FAIL;
+		}
+	}
+
+	return ERROR_OK;
+}
+
+static int write_memory_progbuf_fill_progbuf(struct target *target, uint32_t size)
+{
+	struct riscv_program program;
+
+	riscv_program_init(&program, target);
+	if (riscv_program_store(&program, GDB_REGNO_S1, GDB_REGNO_S0, 0, size) != ERROR_OK)
+		return ERROR_FAIL;
+
+	if (riscv_supports_zcheripurecap(target)) {
+		if (riscv_program_caddi(&program, GDB_REGNO_S0, GDB_REGNO_S0, (int16_t)size)
+				!= ERROR_OK)
+			return ERROR_FAIL;
+	} else {
+		if (riscv_program_addi(&program, GDB_REGNO_S0, GDB_REGNO_S0, (int16_t)size)
+				!= ERROR_OK)
+			return ERROR_FAIL;
+	}
+
+	if (riscv_program_ebreak(&program) != ERROR_OK)
+		return ERROR_FAIL;
+
+	return riscv_program_write(&program);
+}
+
+/**
+ * This function is used to start the memory-writing pipeline.
+ * As part of the process, the function writes the first item and waits for completion,
+ * so forward progress is ensured.
+ * The pipeline looks like this:
+ * debugger -> dm_data[0:1] -> s1 -> memory
+ *
+ * Pre-conditions:
+ * 1. The program buffer should contain the appropriate program.
+ * 2. program registers must be initialized.
+ *
+ * This function sets DM_ABSTRACTAUTO_AUTOEXECDATA to trigger second stage of the
+ * pipeline (dm_data[0:1] -> s1) whenever dm_data is written.
+ */
+static int write_memory_progbuf_startup(struct target *target, target_addr_t *address_p,
+		const uint8_t *buffer, uint32_t size)
+{
 	/* Write the first item to data0 [, data1] */
 	assert(size <= 8);
 	const uint64_t value = buf_get_u64(buffer, 0, 8 * size);
@@ -5408,6 +5527,15 @@ static int write_memory_progbuf_handle_busy(struct target *target,
 	const uint8_t * const curr_buff = buffer + (address_on_target - *address_p);
 	LOG_TARGET_DEBUG(target, "Restarting from 0x%" TARGET_PRIxADDR, *address_p);
 	*address_p = address_on_target;
+
+	if (write_memory_progbuf_setup_registers(target, address_p) != ERROR_OK)
+		return ERROR_FAIL;
+
+	if (riscv_supports_zcheripurecap(target)) {
+		if (write_memory_progbuf_fill_progbuf(target, size) != ERROR_OK)
+			return ERROR_FAIL;
+	}
+
 	/* This restores the pipeline and ensures one item gets reliably written */
 	return write_memory_progbuf_startup(target, address_p, curr_buff, size);
 }
@@ -5510,26 +5638,14 @@ static int write_memory_progbuf_try_to_write(struct target *target,
 	return result;
 }
 
-static int write_memory_progbuf_fill_progbuf(struct target *target, uint32_t size)
+static int write_memory_progbuf_save_registers(struct target *target)
 {
 	if (riscv013_reg_save(target, GDB_REGNO_S0) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv013_reg_save(target, GDB_REGNO_S1) != ERROR_OK)
 		return ERROR_FAIL;
 
-	struct riscv_program program;
-
-	riscv_program_init(&program, target);
-	if (riscv_program_store(&program, GDB_REGNO_S1, GDB_REGNO_S0, 0, size) != ERROR_OK)
-		return ERROR_FAIL;
-
-	if (riscv_program_addi(&program, GDB_REGNO_S0, GDB_REGNO_S0, (int16_t)size) != ERROR_OK)
-		return ERROR_FAIL;
-
-	if (riscv_program_ebreak(&program) != ERROR_OK)
-		return ERROR_FAIL;
-
-	return riscv_program_write(&program);
+	return ERROR_OK;
 }
 
 static struct mem_access_result
@@ -5538,10 +5654,16 @@ write_memory_progbuf_inner(struct target *target,
 {
 	assert(riscv_mem_access_is_write(args));
 
+	if (write_memory_progbuf_save_registers(target) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_SKIPPED_SAVE_REGISTERS_FAILED);
+
+	target_addr_t addr_on_target = args.address;
+	if (write_memory_progbuf_setup_registers(target, &addr_on_target) != ERROR_OK)
+		return mem_access_result(MEM_ACCESS_SKIPPED_SETUP_REGISTERS_FAILED);
+
 	if (write_memory_progbuf_fill_progbuf(target, args.size) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_SKIPPED_PROGBUF_FILL_FAILED);
 
-	target_addr_t addr_on_target = args.address;
 	if (write_memory_progbuf_startup(target, &addr_on_target,
 			args.write_buffer, args.size) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_FAILED_PROGBUF_STARTUP_FAILED);
