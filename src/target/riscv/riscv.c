@@ -6126,6 +6126,102 @@ static const struct command_registration riscv_exec_command_handlers[] = {
 	COMMAND_REGISTRATION_DONE
 };
 
+static inline void command_print_riscv_cheri_capability(struct command_invocation *cmd,
+		const char *reg_name, riscv_reg_t cap)
+{
+	command_print(cmd, "%s: 0x%lx [tag: %c, meta: 0x%lx]", reg_name, cap.value,
+		cap.tag ? 'V' : 'I', cap.meta);
+}
+
+COMMAND_HANDLER(handle_riscv_cheri_pcc_command)
+{
+	LOG_DEBUG("-");
+
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target_was_examined(target)) {
+		LOG_ERROR("Target not examined yet");
+		return ERROR_TARGET_NOT_EXAMINED;
+	}
+
+	if (!riscv_supports_zcheripurecap(target)) {
+		LOG_ERROR("Target does not support CHERI");
+		return ERROR_TARGET_INVALID;
+	}
+
+	if (CMD_ARGC == 0) {
+		riscv_reg_t pcc = {0};
+		if (riscv_reg_get(target, &pcc, GDB_REGNO_PCC) != ERROR_OK)
+			return ERROR_FAIL;
+
+		command_print_riscv_cheri_capability(CMD, "pcc", pcc);
+
+		return ERROR_OK;
+	}
+
+	if (CMD_ARGC == 1 || CMD_ARGC == 2) {
+		target_addr_t addr;
+		COMMAND_PARSE_ADDRESS(CMD_ARGV[0], addr);
+
+		riscv_reg_t pcc = {0};
+		if (CMD_ARGC == 2 && (strcmp(CMD_ARGV[1], "inf") == 0)) {
+			if (riscv_get_cheri_infinite_capability(target, &pcc) != ERROR_OK)
+				return ERROR_FAIL;
+
+			if (riscv_supports_zcherihybrid(target)) {
+				if (riscv_clen(target) == 128)
+					pcc.meta |= CLEN_128_CAP_M;
+				else
+					pcc.meta |= CLEN_64_CAP_AP_M_BIT0;
+			}
+		} else if (CMD_ARGC == 2 && (strcmp(CMD_ARGV[1], "inf-cap") == 0)) {
+			if (riscv_get_cheri_infinite_capability(target, &pcc) != ERROR_OK)
+				return ERROR_FAIL;
+
+			if (riscv_supports_zcherihybrid(target)) {
+				if (riscv_clen(target) == 128)
+					pcc.meta &= ~CLEN_128_CAP_M;
+				else
+					pcc.meta &= ~CLEN_64_CAP_AP_M_BIT0;
+			}
+		} else if ((CMD_ARGC == 2 && (strcmp(CMD_ARGV[1], "current") == 0)) ||
+					CMD_ARGC == 1){
+			if (riscv_reg_get(target, &pcc, GDB_REGNO_PCC) != ERROR_OK)
+				return ERROR_FAIL;
+		} else {
+			return ERROR_COMMAND_SYNTAX_ERROR;
+		}
+
+		pcc.value = addr;
+		if (riscv_reg_set(target, GDB_REGNO_PCC, pcc) != ERROR_OK) {
+			LOG_ERROR("Could not write to register pcc");
+			return ERROR_FAIL;
+		}
+
+		command_print_riscv_cheri_capability(CMD, "pcc", pcc);
+
+		return ERROR_OK;
+	}
+
+	return ERROR_COMMAND_SYNTAX_ERROR;
+}
+
+static const struct command_registration riscv_cheri_exec_command_handlers[] = {
+	{
+		.name = "pcc",
+		.handler = handle_riscv_cheri_pcc_command,
+		.mode = COMMAND_ANY,
+		.usage = "[address [current|inf|inf-cap]]",
+		.help = "Display or set pcc on RISCV CHERI extension; "
+				"with no arguments, display the CHERI capability. "
+				"current (default) - Only change the address field of the current pcc, "
+				"if the address is out of boundary, the tag will be cleared. "
+				"inf - the pcc will be derived from a infinite capability "
+				"(integer pointer mode for zcherihybrid or capability pointer mode for zcheripurecap). "
+				"inf-cap - the pcc will be derived from a infinite capability in capability pointer mode."
+	},
+	COMMAND_REGISTRATION_DONE
+};
+
 /*
  * To be noted that RISC-V targets use the same semihosting commands as
  * ARM targets.
@@ -6154,6 +6250,13 @@ static const struct command_registration riscv_command_handlers[] = {
 		.help = "ARM Command Group",
 		.usage = "",
 		.chain = semihosting_common_handlers
+	},
+	{
+		.name = "riscv_cheri",
+		.mode = COMMAND_ANY,
+		.help = "RISC-V CHERI extension Command Group",
+		.usage = "",
+		.chain = riscv_cheri_exec_command_handlers
 	},
 	{
 		.chain = smp_command_handlers
