@@ -37,6 +37,11 @@
 			(CLEN_64_CAP_SDP | CLEN_64_CAP_AP_M | CLEN_64_CAP_CL | \
 			 CLEN_64_CAP_CT | CLEN_64_CAP_BOUNDS)
 
+enum riscv_zcherihybrid_mode {
+	RISCV_CHERI_PURECAP_MODE = 0,
+	RISCV_CHERI_INTEGER_MODE = 1
+};
+
 static inline void buf_set_cheri_capability(uint8_t *buffer,
 	riscv_reg_t value, unsigned int clen)
 {
@@ -51,6 +56,22 @@ static inline void buf_get_cheri_capability(const uint8_t *buffer,
 	value->value = buf_get_cheri_capability_value(buffer, clen);
 	value->meta = buf_get_cheri_capability_meta(buffer, clen);
 	value->tag = buf_get_cheri_capability_tag(buffer, clen);
+}
+
+static inline void set_cheri_capability_mode(enum riscv_zcherihybrid_mode mode,
+	riscv_reg_t *value, unsigned int clen)
+{
+	if (mode == RISCV_CHERI_INTEGER_MODE) {
+		if (clen == 128)
+			value->meta |= CLEN_128_CAP_M;
+		else
+			value->meta |= CLEN_64_CAP_AP_M_BIT0;
+	} else {
+		if (clen == 128)
+			value->meta &= ~CLEN_128_CAP_M;
+		else
+			value->meta &= ~CLEN_64_CAP_AP_M_BIT0;
+	}
 }
 
 #endif /* OPENOCD_TARGET_RISCV_CHERI_H */

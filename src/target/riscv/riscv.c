@@ -20,12 +20,14 @@
 #include "helper/base64.h"
 #include "helper/time_support.h"
 #include "riscv.h"
+#include "riscv_cheri.h"
 #include "riscv_reg.h"
 #include "program.h"
 #include "gdb_regs.h"
 #include "rtos/rtos.h"
 #include "debug_defines.h"
 #include <helper/bits.h>
+#include <helper/cheri.h>
 #include "field_helpers.h"
 #include <helper/cheri.h>
 
@@ -140,6 +142,10 @@ struct tdata1_cache {
 	riscv_reg_value_t tdata1;
 	struct list_head tdata2_cache_head;
 	struct list_head elem_tdata1;
+};
+
+struct riscv_algorithm {
+	enum riscv_zcherihybrid_mode zcherihybrid_mode;
 };
 
 bool riscv_virt2phys_mode_is_hw(const struct target *target)
@@ -474,6 +480,11 @@ static struct target_type *get_target_type(struct target *target)
 					info->dtm_version);
 			return NULL;
 	}
+}
+
+static inline int riscv_get_cheri_infinite_capability(struct target *target, riscv_reg_t *value)
+{
+	return riscv_reg_get(target, value, GDB_REGNO_DINFC);
 }
 
 static struct riscv_private_config *alloc_default_riscv_private_config(void)
@@ -2829,13 +2840,24 @@ static int enable_watchpoints(struct target *target, bool *wp_is_set)
  * Get everything ready to resume.
  */
 static int resume_prep(struct target *target, bool current,
-		target_addr_t address, bool handle_breakpoints, bool debug_execution)
+		riscv_reg_t new_pc, bool handle_breakpoints, bool debug_execution)
 {
 	assert(target->state == TARGET_HALTED);
 	RISCV_INFO(r);
 
-	if (!current && riscv_reg_set_value(target, GDB_REGNO_PC, address) != ERROR_OK)
-		return ERROR_FAIL;
+	if (!current) {
+		/* Assumes a capability with a valid tag is safe to write to the PCC.
+		 * The caller must ensure the metadata (bounds/permissions) is also valid.
+		 * Otherwise, a CHERI exception will be triggered upon resume.
+		 */
+		if (riscv_supports_zcheripurecap(target) && new_pc.tag) {
+			if (riscv_reg_set(target, GDB_REGNO_PCC, new_pc) != ERROR_OK)
+				return ERROR_FAIL;
+		} else {
+			if (riscv_reg_set_value(target, GDB_REGNO_PC, new_pc.value) != ERROR_OK)
+				return ERROR_FAIL;
+		}
+	}
 
 	if (handle_breakpoints) {
 		/* To be able to run off a trigger, we perform a step operation and then
@@ -2849,7 +2871,7 @@ static int resume_prep(struct target *target, bool current,
 		if (target->debug_reason == DBG_REASON_BREAKPOINT
 		    || (target->debug_reason == DBG_REASON_WATCHPOINT
 			&& r->need_single_step)) {
-			if (old_or_new_riscv_step_impl(target, current, address, handle_breakpoints,
+			if (old_or_new_riscv_step_impl(target, current, new_pc.value, handle_breakpoints,
 					false /* callbacks are not called */) != ERROR_OK)
 				return ERROR_FAIL;
 		}
@@ -2915,7 +2937,7 @@ static int resume_finish(struct target *target, bool debug_execution)
 static int riscv_resume(
 		struct target *target,
 		bool current,
-		target_addr_t address,
+		riscv_reg_t new_pc,
 		bool handle_breakpoints,
 		bool debug_execution,
 		bool single_hart)
@@ -2942,7 +2964,7 @@ static int riscv_resume(
 	LOG_TARGET_DEBUG(target, "current=%s, address=0x%"
 				TARGET_PRIxADDR ", handle_breakpoints=%s, debug_exec=%s",
 				current ? "true" : "false",
-				address,
+				new_pc.value,
 				handle_breakpoints ? "true" : "false",
 				debug_execution ? "true" : "false");
 
@@ -2952,7 +2974,7 @@ static int riscv_resume(
 		LOG_TARGET_DEBUG(t, "target->state=%s", target_state_name(t));
 		if (t->state != TARGET_HALTED)
 			LOG_TARGET_DEBUG(t, "skipping this target: target not halted");
-		else if (resume_prep(t, current, address, handle_breakpoints,
+		else if (resume_prep(t, current, new_pc, handle_breakpoints,
 					debug_execution) != ERROR_OK)
 			result = ERROR_FAIL;
 	}
@@ -2961,7 +2983,7 @@ static int riscv_resume(
 		struct target *t = tlist->target;
 		struct riscv_info *i = riscv_info(t);
 		if (i->prepped) {
-			if (resume_go(t, current, address, handle_breakpoints,
+			if (resume_go(t, current, new_pc.value, handle_breakpoints,
 						debug_execution) != ERROR_OK)
 				result = ERROR_FAIL;
 		}
@@ -2985,7 +3007,7 @@ static int riscv_target_resume(struct target *target, bool current,
 		LOG_TARGET_ERROR(target, "Not halted.");
 		return ERROR_TARGET_NOT_HALTED;
 	}
-	return riscv_resume(target, current, address, handle_breakpoints,
+	return riscv_resume(target, current, (riscv_reg_t){ .value = address }, handle_breakpoints,
 			debug_execution, false);
 }
 
@@ -3632,6 +3654,24 @@ static int riscv_privilege_restore(struct target *target, riscv_reg_value_t old_
 	return riscv_reg_set_value(target, GDB_REGNO_PRIV, old_priv);
 }
 
+static int riscv_mseccfg_backup_enable_cheri(struct target *target, riscv_reg_value_t *old_mseccfg)
+{
+	riscv_reg_value_t current_mseccfg;
+	int ret = riscv_reg_get_value(target, &current_mseccfg, CSR_MSECCFG + GDB_REGNO_CSR0);
+	if (ret != ERROR_OK) {
+		LOG_TARGET_ERROR(target, "Failed to read mseccfg register!");
+		return ret;
+	}
+	if (old_mseccfg)
+		*old_mseccfg = current_mseccfg;
+	riscv_reg_value_t new_mseccfg = MSECCFG_CRE;
+	return riscv_reg_set_value(target, CSR_MSECCFG + GDB_REGNO_CSR0, new_mseccfg);
+}
+
+static int riscv_mseccfg_restore(struct target *target, riscv_reg_value_t old_mseccfg)
+{
+	return riscv_reg_set_value(target, CSR_MSECCFG + GDB_REGNO_CSR0, old_mseccfg);
+}
 
 /* Algorithm must end with a software breakpoint instruction. */
 static int riscv_run_algorithm(struct target *target, int num_mem_params,
@@ -3650,32 +3690,57 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 	for (int i = 0; i < num_mem_params; i++) {
 		if (mem_params[i].direction == PARAM_OUT ||
 				mem_params[i].direction == PARAM_IN_OUT) {
-			int retval = target_write_buffer(target, mem_params[i].address, mem_params[i].size, mem_params[i].value);
-			if (retval != ERROR_OK) {
-				LOG_TARGET_ERROR(target, "Couldn't write input mem param into the memory, addr=0x%" TARGET_PRIxADDR
-					" size=0x%" PRIx32, mem_params[i].address, mem_params[i].size);
-				return retval;
+			if (riscv_supports_zcheripurecap(target) &&
+					mem_params[i].size == buf_cheri_capability_size(target_cheri_capability_bits(target))) {
+				int retval = target_write_cheri_capability_to_memory(target, mem_params[i].address, 1,
+						mem_params[i].value);
+				if (retval != ERROR_OK) {
+					LOG_TARGET_ERROR(target, "Couldn't write input mem param into the memory, addr=0x%" TARGET_PRIxADDR
+						" (CHERI capability)", mem_params[i].address);
+					return retval;
+				}
+			} else {
+				int retval = target_write_buffer(target, mem_params[i].address, mem_params[i].size,
+						mem_params[i].value);
+				if (retval != ERROR_OK) {
+					LOG_TARGET_ERROR(target, "Couldn't write input mem param into the memory, addr=0x%" TARGET_PRIxADDR
+						" size=0x%" PRIx32, mem_params[i].address, mem_params[i].size);
+					return retval;
+				}
 			}
 		}
 	}
 
 	/* Save registers */
-	struct reg *reg_pc = register_get_by_name(target->reg_cache, "pc", true);
+	struct reg *reg_pc = register_get_by_name(target->reg_cache,
+												riscv_supports_zcheripurecap(target) ? "pcc" : "pc", true);
 	if (!reg_pc || reg_pc->type->get(reg_pc) != ERROR_OK)
 		return ERROR_FAIL;
-	uint64_t saved_pc = buf_get_u64(reg_pc->value, 0, reg_pc->size);
-	LOG_TARGET_DEBUG(target, "saved_pc=0x%" PRIx64, saved_pc);
 
-	uint64_t saved_regs[32];
+	riscv_reg_t saved_pc = {0};
+	if (riscv_supports_zcheripurecap(target)) {
+		buf_get_cheri_capability(reg_pc->value, &saved_pc, riscv_clen(target));
+		LOG_TARGET_DEBUG(target, "saved_pc=0x%" PRIx64 " (m:0x%" PRIx64 " t:%s)",
+			saved_pc.value, saved_pc.meta, saved_pc.tag ? "valid" : "invalid");
+	} else {
+		saved_pc.value = buf_get_u64(reg_pc->value, 0, reg_pc->size);
+		LOG_TARGET_DEBUG(target, "saved_pc=0x%" PRIx64, saved_pc.value);
+	}
+
+	riscv_reg_t saved_regs[32];
 	for (int i = 0; i < 32; i++) {
-		struct reg *r = register_get_by_number(target->reg_cache, i, false);
+		uint32_t reg_num = riscv_supports_zcheripurecap(target) ? i + GDB_REGNO_C0 : i;
+		struct reg *r = register_get_by_number(target->reg_cache, reg_num, false);
 
 		LOG_TARGET_DEBUG(target, "save %s", r->name);
 
 		if (r->type->get(r) != ERROR_OK)
 			return ERROR_FAIL;
 
-		saved_regs[i] = buf_get_u64(r->value, 0, r->size);
+		if (register_is_cheri_reg(r))
+			buf_get_cheri_capability(r->value, &saved_regs[i], riscv_clen(target));
+		else
+			saved_regs[i].value = buf_get_u64(r->value, 0, r->size);
 	}
 
 	for (int i = 0; i < num_reg_params; i++) {
@@ -3691,7 +3756,8 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 			return ERROR_FAIL;
 		}
 
-		if (r->number > GDB_REGNO_XPR31) {
+		if (r->number > GDB_REGNO_XPR31 &&
+			(r->number < GDB_REGNO_C0 || r->number > GDB_REGNO_C31)) {
 			LOG_TARGET_ERROR(target, "Only GPRs can be use as argument registers.");
 			return ERROR_FAIL;
 		}
@@ -3712,9 +3778,32 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 	if (riscv_privilege_backup_set_m_mode(target, &current_priv) != ERROR_OK)
 		return ERROR_FAIL;
 
+	/* Setup resume program counter for algorithm */
+	riscv_reg_t entry_pc = {0};
+	riscv_reg_value_t current_cheri_status = 0;
+	if (riscv_supports_zcheripurecap(target) && arch_info) {
+		if (riscv_get_cheri_infinite_capability(target, &entry_pc) != ERROR_OK)
+			return ERROR_FAIL;
+
+		if (riscv_supports_zcherihybrid(target) && arch_info) {
+			struct riscv_algorithm *riscv_algorithm_info = (struct riscv_algorithm *)arch_info;
+			set_cheri_capability_mode(riscv_algorithm_info->zcherihybrid_mode, &entry_pc, riscv_clen(target));
+
+			if (riscv_algorithm_info->zcherihybrid_mode == RISCV_CHERI_PURECAP_MODE) {
+				/* Enable and backup CHERI status */
+				if (riscv_mseccfg_backup_enable_cheri(target, &current_cheri_status) != ERROR_OK)
+					return ERROR_FAIL;
+			}
+		}
+
+		entry_pc.value = entry_point;
+	} else {
+		entry_pc.value = entry_point;
+	}
+
 	/* Run algorithm */
 	LOG_TARGET_DEBUG(target, "resume at 0x%" TARGET_PRIxADDR, entry_point);
-	if (riscv_resume(target, false, entry_point, false, true, true) != ERROR_OK)
+	if (riscv_resume(target, false, entry_pc, false, true, true) != ERROR_OK)
 		return ERROR_FAIL;
 
 	int64_t start = timeval_ms();
@@ -3725,25 +3814,50 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 			LOG_TARGET_ERROR(target, "Algorithm timed out after %" PRId64 " ms.", now - start);
 			riscv_halt(target);
 			old_or_new_riscv_poll(target);
-			enum gdb_regno regnums[] = {
-				GDB_REGNO_RA, GDB_REGNO_SP, GDB_REGNO_GP, GDB_REGNO_TP,
-				GDB_REGNO_T0, GDB_REGNO_T1, GDB_REGNO_T2, GDB_REGNO_FP,
-				GDB_REGNO_S1, GDB_REGNO_A0, GDB_REGNO_A1, GDB_REGNO_A2,
-				GDB_REGNO_A3, GDB_REGNO_A4, GDB_REGNO_A5, GDB_REGNO_A6,
-				GDB_REGNO_A7, GDB_REGNO_S2, GDB_REGNO_S3, GDB_REGNO_S4,
-				GDB_REGNO_S5, GDB_REGNO_S6, GDB_REGNO_S7, GDB_REGNO_S8,
-				GDB_REGNO_S9, GDB_REGNO_S10, GDB_REGNO_S11, GDB_REGNO_T3,
-				GDB_REGNO_T4, GDB_REGNO_T5, GDB_REGNO_T6,
-				GDB_REGNO_PC,
-				GDB_REGNO_MSTATUS, GDB_REGNO_MEPC, GDB_REGNO_MCAUSE,
-			};
-			for (unsigned int i = 0; i < ARRAY_SIZE(regnums); i++) {
-				enum gdb_regno regno = regnums[i];
-				riscv_reg_value_t reg_value;
-				if (riscv_reg_get_value(target, &reg_value, regno) != ERROR_OK)
-					break;
+			if (riscv_supports_zcheripurecap(target)) {
+				enum gdb_regno regnums[] = {
+					GDB_REGNO_CRA, GDB_REGNO_CSP, GDB_REGNO_CGP, GDB_REGNO_CTP,
+					GDB_REGNO_CT0, GDB_REGNO_CT1, GDB_REGNO_CT2, GDB_REGNO_CFP,
+					GDB_REGNO_CS1, GDB_REGNO_CA0, GDB_REGNO_CA1, GDB_REGNO_CA2,
+					GDB_REGNO_CA3, GDB_REGNO_CA4, GDB_REGNO_CA5, GDB_REGNO_CA6,
+					GDB_REGNO_CA7, GDB_REGNO_CS2, GDB_REGNO_CS3, GDB_REGNO_CS4,
+					GDB_REGNO_CS5, GDB_REGNO_CS6, GDB_REGNO_CS7, GDB_REGNO_CS8,
+					GDB_REGNO_CS9, GDB_REGNO_CS10, GDB_REGNO_CS11, GDB_REGNO_CT3,
+					GDB_REGNO_CT4, GDB_REGNO_CT5, GDB_REGNO_CT6,
+					GDB_REGNO_PCC,
+					GDB_REGNO_MSTATUS, GDB_REGNO_MEPC, GDB_REGNO_MCAUSE,
+				};
+				for (unsigned int i = 0; i < ARRAY_SIZE(regnums); i++) {
+					enum gdb_regno regno = regnums[i];
+					riscv_reg_t reg = {0};
+					if (riscv_reg_get(target, &reg, regno) != ERROR_OK)
+						break;
 
-				LOG_TARGET_ERROR(target, "%s = 0x%" PRIx64, riscv_reg_gdb_regno_name(target, regno), reg_value);
+					LOG_TARGET_ERROR(target, "%s = 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s)",
+						riscv_reg_gdb_regno_name(target, regno), reg.value, reg.meta,
+						reg.tag ? "valid" : "invalid");
+				}
+			} else {
+				enum gdb_regno regnums[] = {
+					GDB_REGNO_RA, GDB_REGNO_SP, GDB_REGNO_GP, GDB_REGNO_TP,
+					GDB_REGNO_T0, GDB_REGNO_T1, GDB_REGNO_T2, GDB_REGNO_FP,
+					GDB_REGNO_S1, GDB_REGNO_A0, GDB_REGNO_A1, GDB_REGNO_A2,
+					GDB_REGNO_A3, GDB_REGNO_A4, GDB_REGNO_A5, GDB_REGNO_A6,
+					GDB_REGNO_A7, GDB_REGNO_S2, GDB_REGNO_S3, GDB_REGNO_S4,
+					GDB_REGNO_S5, GDB_REGNO_S6, GDB_REGNO_S7, GDB_REGNO_S8,
+					GDB_REGNO_S9, GDB_REGNO_S10, GDB_REGNO_S11, GDB_REGNO_T3,
+					GDB_REGNO_T4, GDB_REGNO_T5, GDB_REGNO_T6,
+					GDB_REGNO_PC,
+					GDB_REGNO_MSTATUS, GDB_REGNO_MEPC, GDB_REGNO_MCAUSE,
+				};
+				for (unsigned int i = 0; i < ARRAY_SIZE(regnums); i++) {
+					enum gdb_regno regno = regnums[i];
+					riscv_reg_value_t reg_value;
+					if (riscv_reg_get_value(target, &reg_value, regno) != ERROR_OK)
+						break;
+
+					LOG_TARGET_ERROR(target, "%s = 0x%" PRIx64, riscv_reg_gdb_regno_name(target, regno), reg_value);
+				}
 			}
 			return ERROR_TARGET_TIMEOUT;
 		}
@@ -3759,7 +3873,9 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 
 	if (reg_pc->type->get(reg_pc) != ERROR_OK)
 		return ERROR_FAIL;
-	uint64_t final_pc = buf_get_u64(reg_pc->value, 0, reg_pc->size);
+	uint64_t final_pc = riscv_supports_zcheripurecap(target) ?
+			buf_get_cheri_capability_value(reg_pc->value, riscv_clen(target)) :
+			buf_get_u64(reg_pc->value, 0, reg_pc->size);
 	if (exit_point && final_pc != exit_point) {
 		LOG_TARGET_ERROR(target, "PC ended up at 0x%" PRIx64 " instead of 0x%"
 				TARGET_PRIxADDR, final_pc, exit_point);
@@ -3774,11 +3890,35 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 	if (riscv_privilege_restore(target, current_priv) != ERROR_OK)
 		return ERROR_FAIL;
 
+	/* Restore CHERI status */
+	if (riscv_supports_zcherihybrid(target) && arch_info) {
+		struct riscv_algorithm *riscv_algorithm_info = (struct riscv_algorithm *)arch_info;
+		if (riscv_algorithm_info->zcherihybrid_mode == RISCV_CHERI_PURECAP_MODE) {
+			if (riscv_mseccfg_restore(target, current_cheri_status) != ERROR_OK)
+				return ERROR_FAIL;
+		}
+	}
+
 	/* Restore program counter */
-	uint8_t buf[8] = { 0 };
-	buf_set_u64(buf, 0, info->xlen, saved_pc);
-	if (reg_pc->type->set(reg_pc, buf) != ERROR_OK)
-		return ERROR_FAIL;
+	if (riscv_supports_zcheripurecap(target)) {
+		uint8_t *buf = buf_alloc_cheri_capability(1, riscv_clen(target));
+		if (!buf) {
+			LOG_ERROR("Out of memory");
+			return ERROR_FAIL;
+		}
+
+		buf_set_cheri_capability(buf, saved_pc, riscv_clen(target));
+		if (reg_pc->type->set(reg_pc, buf) != ERROR_OK) {
+			free(buf);
+			return ERROR_FAIL;
+		}
+		free(buf);
+	} else {
+		uint8_t buf[8] = { 0 };
+		buf_set_u64(buf, 0, info->xlen, saved_pc.value);
+		if (reg_pc->type->set(reg_pc, buf) != ERROR_OK)
+			return ERROR_FAIL;
+	}
 
 	/* Read reg_params */
 	for (int i = 0; i < num_reg_params; i++) {
@@ -3795,12 +3935,30 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 
 	/* Restore registers */
 	for (int i = 0; i < 32; i++) {
-		struct reg *r = register_get_by_number(target->reg_cache, i, false);
+		uint32_t reg_num = riscv_supports_zcheripurecap(target) ? i + GDB_REGNO_C0 : i;
+		struct reg *r = register_get_by_number(target->reg_cache, reg_num, false);
 		LOG_TARGET_DEBUG(target, "restore %s", r->name);
-		buf_set_u64(buf, 0, info->xlen, saved_regs[i]);
-		if (r->type->set(r, buf) != ERROR_OK) {
-			LOG_TARGET_ERROR(target, "set(%s) failed", r->name);
-			return ERROR_FAIL;
+		if (register_is_cheri_reg(r)) {
+			uint8_t *buf = buf_alloc_cheri_capability(1, riscv_clen(target));
+			if (!buf) {
+				LOG_ERROR("Out of memory");
+				return ERROR_FAIL;
+			}
+
+			buf_set_cheri_capability(buf, saved_regs[i], riscv_clen(target));
+			if (r->type->set(r, buf) != ERROR_OK) {
+				LOG_TARGET_ERROR(target, "set(%s) failed", r->name);
+				free(buf);
+				return ERROR_FAIL;
+			}
+			free(buf);
+		} else {
+			uint8_t buf[8] = { 0 };
+			buf_set_u64(buf, 0, info->xlen, saved_regs[i].value);
+			if (r->type->set(r, buf) != ERROR_OK) {
+				LOG_TARGET_ERROR(target, "set(%s) failed", r->name);
+				return ERROR_FAIL;
+			}
 		}
 	}
 
@@ -3808,13 +3966,25 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 	for (int i = 0; i < num_mem_params; i++) {
 		if (mem_params[i].direction == PARAM_IN ||
 				mem_params[i].direction == PARAM_IN_OUT) {
-			int retval = target_read_buffer(target, mem_params[i].address, mem_params[i].size,
-					mem_params[i].value);
-			if (retval != ERROR_OK) {
-				LOG_TARGET_ERROR(target, "Couldn't read output mem param from the memory, "
-					"addr=0x%" TARGET_PRIxADDR " size=0x%" PRIx32,
-					mem_params[i].address, mem_params[i].size);
-				return retval;
+			if (riscv_supports_zcheripurecap(target) &&
+				mem_params[i].size == buf_cheri_capability_size(target_cheri_capability_bits(target))) {
+				int retval = target_read_cheri_capability_from_memory(target, mem_params[i].address, 1,
+						mem_params[i].value);
+				if (retval != ERROR_OK) {
+					LOG_TARGET_ERROR(target, "Couldn't read output mem param from the memory, "
+						"addr=0x%" TARGET_PRIxADDR " (CHERI capability)",
+						mem_params[i].address);
+					return retval;
+				}
+			} else {
+				int retval = target_read_buffer(target, mem_params[i].address, mem_params[i].size,
+						mem_params[i].value);
+				if (retval != ERROR_OK) {
+					LOG_TARGET_ERROR(target, "Couldn't read output mem param from the memory, "
+						"addr=0x%" TARGET_PRIxADDR " size=0x%" PRIx32,
+						mem_params[i].address, mem_params[i].size);
+					return retval;
+				}
 			}
 		}
 	}
@@ -4167,7 +4337,7 @@ int riscv_openocd_poll(struct target *target)
 		riscv_halt(target);
 	} else if (should_resume) {
 		LOG_TARGET_DEBUG(target, "resume all");
-		riscv_resume(target, true, 0, 0, 0, false);
+		riscv_resume(target, true, (riscv_reg_t){0}, 0, 0, false);
 	} else if (halted && running) {
 		LOG_TARGET_DEBUG(target, "SMP group is in inconsistent state: %u halted, %u running",
 					halted, running);
