@@ -2062,8 +2062,13 @@ int target_alloc_working_area_try(struct target *target, uint32_t size, struct w
 		struct working_area *new_wa = malloc(sizeof(*new_wa));
 		if (new_wa) {
 			new_wa->next = NULL;
-			new_wa->size = ALIGN_DOWN(target->working_area_size, 4); /* 4-byte align */
-			new_wa->address = target->working_area;
+			new_wa->size = target_supports_cheri(target) ?
+				ALIGN_DOWN(target->working_area_size,
+							cheri_capability_size(target_cheri_capability_bits(target))) : /* Capability align */
+				ALIGN_DOWN(target->working_area_size, 4); /* 4-byte align */
+			new_wa->address = target_supports_cheri(target) ?
+				ALIGN_UP(target->working_area, cheri_capability_size(target_cheri_capability_bits(target))) :
+				target->working_area;
 			new_wa->backup = NULL;
 			new_wa->user = NULL;
 			new_wa->free = true;
@@ -2072,8 +2077,10 @@ int target_alloc_working_area_try(struct target *target, uint32_t size, struct w
 		target->working_areas = new_wa;
 	}
 
-	/* only allocate multiples of 4 byte */
-	size = ALIGN_UP(size, 4);
+	/* only allocate multiples of 4 byte or multiples of size of capability if target supports CHERI */
+	size = target_supports_cheri(target) ?
+		ALIGN_UP(size, cheri_capability_size(target_cheri_capability_bits(target))) :
+		ALIGN_UP(size, 4);
 
 	struct working_area *c = target->working_areas;
 
@@ -2095,12 +2102,18 @@ int target_alloc_working_area_try(struct target *target, uint32_t size, struct w
 
 	if (target->backup_working_area) {
 		if (!c->backup) {
-			c->backup = malloc(c->size);
+			c->backup = target_supports_cheri(target) ?
+				buf_alloc_cheri_capability(cheri_capability_per_bytes(c->size, target_cheri_capability_bits(target)),
+					target_cheri_capability_bits(target)) :
+				malloc(c->size);
 			if (!c->backup)
 				return ERROR_FAIL;
 		}
 
-		int retval = target_read_memory(target, c->address, 4, c->size / 4, c->backup);
+		int retval = target_supports_cheri(target) ?
+				target_read_cheri_capability_from_memory(target, c->address,
+					cheri_capability_per_bytes(c->size, target_cheri_capability_bits(target)), c->backup) :
+				target_read_memory(target, c->address, 4, c->size / 4, c->backup);
 		if (retval != ERROR_OK)
 			return retval;
 	}
@@ -2133,7 +2146,10 @@ static int target_restore_working_area(struct target *target, struct working_are
 	int retval = ERROR_OK;
 
 	if (target->backup_working_area && area->backup) {
-		retval = target_write_memory(target, area->address, 4, area->size / 4, area->backup);
+		retval = target_supports_cheri(target) ?
+					target_write_cheri_capability_to_memory(target,	area->address,
+						cheri_capability_per_bytes(area->size, target_cheri_capability_bits(target)), area->backup) :
+					target_write_memory(target, area->address, 4, area->size / 4, area->backup);
 		if (retval != ERROR_OK)
 			LOG_ERROR("failed to restore %" PRIu32 " bytes of working area at address " TARGET_ADDR_FMT,
 					area->size, area->address);
@@ -2227,7 +2243,10 @@ uint32_t target_get_working_area_avail(struct target *target)
 	uint32_t max_size = 0;
 
 	if (!c)
-		return ALIGN_DOWN(target->working_area_size, 4);
+		return target_supports_cheri(target) ?
+				ALIGN_DOWN(target->working_area_size,
+							cheri_capability_size(target_cheri_capability_bits(target))) : /* Capability align */
+				ALIGN_DOWN(target->working_area_size, 4); /* 4-byte align */
 
 	while (c) {
 		if (c->free && max_size < c->size)
