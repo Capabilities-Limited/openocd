@@ -3609,6 +3609,30 @@ static int riscv_arch_state(struct target *target)
 	return tt->arch_state(target);
 }
 
+static int riscv_privilege_backup_set_m_mode(struct target *target, riscv_reg_value_t *old_priv)
+{
+	riscv_reg_value_t current_priv;
+	int ret = riscv_reg_get_value(target, &current_priv, GDB_REGNO_PRIV);
+	if (ret != ERROR_OK) {
+	    LOG_TARGET_ERROR(target, "Failed to read priv register!");
+	    return ret;
+	}
+	if (old_priv)
+		*old_priv = current_priv;
+
+	riscv_reg_value_t new_priv = 0;
+	new_priv = set_field(new_priv, VIRT_PRIV_PRV, PRV_M);
+	new_priv = set_field(new_priv, VIRT_PRIV_V,   0);
+
+	return riscv_reg_set_value(target, GDB_REGNO_PRIV, new_priv);
+}
+
+static int riscv_privilege_restore(struct target *target, riscv_reg_value_t old_priv)
+{
+	return riscv_reg_set_value(target, GDB_REGNO_PRIV, old_priv);
+}
+
+
 /* Algorithm must end with a software breakpoint instruction. */
 static int riscv_run_algorithm(struct target *target, int num_mem_params,
 		struct mem_param *mem_params, int num_reg_params,
@@ -3643,8 +3667,18 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 	LOG_TARGET_DEBUG(target, "saved_pc=0x%" PRIx64, saved_pc);
 
 	uint64_t saved_regs[32];
+	for (int i = 0; i < 32; i++) {
+		struct reg *r = register_get_by_number(target->reg_cache, i, false);
+
+		LOG_TARGET_DEBUG(target, "save %s", r->name);
+
+		if (r->type->get(r) != ERROR_OK)
+			return ERROR_FAIL;
+
+		saved_regs[i] = buf_get_u64(r->value, 0, r->size);
+	}
+
 	for (int i = 0; i < num_reg_params; i++) {
-		LOG_TARGET_DEBUG(target, "save %s", reg_params[i].reg_name);
 		struct reg *r = register_get_by_name(target->reg_cache, reg_params[i].reg_name, false);
 		if (!r) {
 			LOG_TARGET_ERROR(target, "Couldn't find register named '%s'", reg_params[i].reg_name);
@@ -3662,10 +3696,6 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 			return ERROR_FAIL;
 		}
 
-		if (r->type->get(r) != ERROR_OK)
-			return ERROR_FAIL;
-		saved_regs[r->number] = buf_get_u64(r->value, 0, r->size);
-
 		if (reg_params[i].direction == PARAM_OUT || reg_params[i].direction == PARAM_IN_OUT) {
 			if (r->type->set(r, reg_params[i].value) != ERROR_OK)
 				return ERROR_FAIL;
@@ -3675,6 +3705,11 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 	/* Disable Interrupts before attempting to run the algorithm. */
 	riscv_reg_value_t current_mstatus;
 	if (riscv_interrupts_disable(target, &current_mstatus) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Save privilege mode, then run the algorithm in M-mode */
+	riscv_reg_value_t current_priv;
+	if (riscv_privilege_backup_set_m_mode(target, &current_priv) != ERROR_OK)
 		return ERROR_FAIL;
 
 	/* Run algorithm */
@@ -3735,12 +3770,17 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 	if (riscv_interrupts_restore(target, current_mstatus) != ERROR_OK)
 		return ERROR_FAIL;
 
-	/* Restore registers */
+	/* Restore privilege mode */
+	if (riscv_privilege_restore(target, current_priv) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Restore program counter */
 	uint8_t buf[8] = { 0 };
 	buf_set_u64(buf, 0, info->xlen, saved_pc);
 	if (reg_pc->type->set(reg_pc, buf) != ERROR_OK)
 		return ERROR_FAIL;
 
+	/* Read reg_params */
 	for (int i = 0; i < num_reg_params; i++) {
 		if (reg_params[i].direction == PARAM_IN ||
 				reg_params[i].direction == PARAM_IN_OUT) {
@@ -3751,9 +3791,13 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 			}
 			buf_cpy(r->value, reg_params[i].value, reg_params[i].size);
 		}
-		LOG_TARGET_DEBUG(target, "restore %s", reg_params[i].reg_name);
-		struct reg *r = register_get_by_name(target->reg_cache, reg_params[i].reg_name, false);
-		buf_set_u64(buf, 0, info->xlen, saved_regs[r->number]);
+	}
+
+	/* Restore registers */
+	for (int i = 0; i < 32; i++) {
+		struct reg *r = register_get_by_number(target->reg_cache, i, false);
+		LOG_TARGET_DEBUG(target, "restore %s", r->name);
+		buf_set_u64(buf, 0, info->xlen, saved_regs[i]);
 		if (r->type->set(r, buf) != ERROR_OK) {
 			LOG_TARGET_ERROR(target, "set(%s) failed", r->name);
 			return ERROR_FAIL;
