@@ -208,6 +208,12 @@ static uint32_t addi(unsigned int dest, unsigned int src, int16_t imm)
 	return imm_i((uint16_t)imm) | inst_rs1(src) | inst_rd(dest) | MATCH_ADDI;
 }
 
+static uint32_t caddi(unsigned int dest, unsigned int src, uint16_t imm) __attribute__ ((unused));
+static uint32_t caddi(unsigned int dest, unsigned int src, uint16_t imm)
+{
+	return imm_i(imm) | inst_rs1(src) | inst_rd(dest) | MATCH_CADDI;
+}
+
 static uint32_t csrr(unsigned int rd, unsigned int csr) __attribute__ ((unused));
 static uint32_t csrr(unsigned int rd, unsigned int csr)
 {
@@ -445,6 +451,74 @@ static uint32_t vslide1down_vx(unsigned int vd, unsigned int vs2,
 	assert(rs1 <= MAX_GPR_NUM);
 
 	return (vm ? (1u << 25) : 0u) | inst_rs2(vs2) | inst_rs1(rs1) | inst_rd(vd) | MATCH_VSLIDE1DOWN_VX;
+}
+
+/* CHERI opcodes */
+
+static uint32_t scaddr(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
+static uint32_t scaddr(unsigned int cd, unsigned int cs1, unsigned int rs2)
+{
+	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_SCADDR;
+}
+
+static uint32_t lc(unsigned int rd, unsigned int base, uint16_t offset) __attribute__ ((unused));
+static uint32_t lc(unsigned int rd, unsigned int base, uint16_t offset)
+{
+	return imm_i(offset) | inst_rs1(base) | inst_rd(rd) | MATCH_LQ;
+}
+
+static uint32_t sc(unsigned int src, unsigned int base, uint16_t offset) __attribute__ ((unused));
+static uint32_t sc(unsigned int src, unsigned int base, uint16_t offset)
+{
+	return imm_s(offset) | inst_rs2(src) | inst_rs1(base) | MATCH_SQ;
+}
+
+static uint32_t schi(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
+static uint32_t schi(unsigned int cd, unsigned int cs1, unsigned int rs2)
+{
+	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_SCHI;
+}
+
+static uint32_t cbld(unsigned int cd, unsigned int cs1, unsigned int cs2) __attribute__ ((unused));
+static uint32_t cbld(unsigned int cd, unsigned int cs1, unsigned int cs2)
+{
+	return inst_rs2(cs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_CBLD;
+}
+
+static uint32_t scmode(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
+static uint32_t scmode(unsigned int cd, unsigned int cs1, unsigned int rs2)
+{
+	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_SCMODE;
+}
+
+static uint32_t sentry(unsigned int cd, unsigned int cs1) __attribute__ ((unused));
+static uint32_t sentry(unsigned int cd, unsigned int cs1)
+{
+	return inst_rs1(cs1) | inst_rd(cd) | MATCH_SENTRY;
+}
+
+static uint32_t gctag(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
+static uint32_t gctag(unsigned int rd, unsigned int cs1)
+{
+	return inst_rs1(cs1) | inst_rd(rd) | MATCH_GCTAG;
+}
+
+static uint32_t gchi(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
+static uint32_t gchi(unsigned int rd, unsigned int cs1)
+{
+	return inst_rs1(cs1) | inst_rd(rd) | MATCH_GCHI;
+}
+
+static uint32_t modesw_cap(void) __attribute__ ((unused));
+static uint32_t modesw_cap(void)
+{
+	return MATCH_MODESW_CAP;
+}
+
+static uint32_t modesw_int(void) __attribute__ ((unused));
+static uint32_t modesw_int(void)
+{
+	return MATCH_MODESW_INT;
 }
 
 #endif /* OPENOCD_TARGET_RISCV_OPCODES_H */
