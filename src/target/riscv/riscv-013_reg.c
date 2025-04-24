@@ -30,6 +30,18 @@ static int riscv013_reg_get(struct reg *reg)
 			return ERROR_FAIL;
 
 		reg->valid = riscv_reg_impl_gdb_regno_cacheable(reg->number, /* is write? */ false);
+	} else if (register_is_cheri_reg(reg)) {
+		/* TODO: Access real machine capability register. Temporarily put an invalid tag
+		 * and meta to form a fake capability until it's fixed.
+		 */
+		uint64_t value;
+		int result = riscv_reg_get(target, &value, reg->number);
+		if (result != ERROR_OK)
+			return result;
+		buf_set_u64(reg->value, 0, 8, 0); /* tag */
+		buf_set_u64(reg->value + 1, 0, riscv_xlen(target), value); /* address/data */
+		buf_set_u64(reg->value + 1 + riscv_xlen(target) / 8, 0,
+						riscv_xlen(target), 0); /* meta */
 	} else {
 		uint64_t value;
 		int result = riscv_reg_get(target, &value, reg->number);
@@ -65,10 +77,16 @@ static int riscv013_reg_set(struct reg *reg, uint8_t *buf)
 
 		memcpy(reg->value, buf, DIV_ROUND_UP(reg->size, 8));
 		reg->valid = riscv_reg_impl_gdb_regno_cacheable(reg->number, /* is write? */ true);
+	} else if (register_is_cheri_reg(reg)) {
+		const riscv_reg_t value = buf_get_u64(buf + 1, 0, riscv_xlen(target)); /* address/data */
+		if (riscv_reg_set(target, reg->number, value) != ERROR_OK)
+			return ERROR_FAIL;
+		memcpy(reg->value, buf, DIV_ROUND_UP(reg->size, 8));
 	} else {
 		const riscv_reg_t value = buf_get_u64(buf, 0, reg->size);
 		if (riscv_reg_set(target, reg->number, value) != ERROR_OK)
 			return ERROR_FAIL;
+		memcpy(reg->value, buf, DIV_ROUND_UP(reg->size, 8));
 	}
 
 	return ERROR_OK;
@@ -358,10 +376,12 @@ int riscv013_reg_examine_all(struct target *target)
 
 	/* Reading CSRs may clobber "s0", "s1", so it should be possible to
 	 * save them in cache. */
-	res = init_cache_entry(target, GDB_REGNO_S0);
+	res = init_cache_entry(target, riscv_supports_zcheripurecap(target) ?
+			GDB_REGNO_CS0 : GDB_REGNO_S0);
 	if (res != ERROR_OK)
 		return res;
-	res = init_cache_entry(target, GDB_REGNO_S1);
+	res = init_cache_entry(target, riscv_supports_zcheripurecap(target) ?
+			GDB_REGNO_CS1 : GDB_REGNO_S1);
 	if (res != ERROR_OK)
 		return res;
 

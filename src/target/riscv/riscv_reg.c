@@ -90,6 +90,42 @@ static const char * const default_reg_names[GDB_REGNO_COUNT] = {
 	[GDB_REGNO_FT10] = "ft10",
 	[GDB_REGNO_FT11] = "ft11",
 
+	/* CHERI register defaiult name */
+	[GDB_REGNO_CNULL] = "cnull",
+	[GDB_REGNO_CRA] = "cra",
+	[GDB_REGNO_CSP] = "csp",
+	[GDB_REGNO_CGP] = "cgp",
+	[GDB_REGNO_CTP] = "ctp",
+	[GDB_REGNO_CT0] = "ct0",
+	[GDB_REGNO_CT1] = "ct1",
+	[GDB_REGNO_CT2] = "ct2",
+	[GDB_REGNO_CFP] = "cfp",
+	[GDB_REGNO_CS1] = "cs1",
+	[GDB_REGNO_CA0] = "ca0",
+	[GDB_REGNO_CA1] = "ca1",
+	[GDB_REGNO_CA2] = "ca2",
+	[GDB_REGNO_CA3] = "ca3",
+	[GDB_REGNO_CA4] = "ca4",
+	[GDB_REGNO_CA5] = "ca5",
+	[GDB_REGNO_CA6] = "ca6",
+	[GDB_REGNO_CA7] = "ca7",
+	[GDB_REGNO_CS2] = "cs2",
+	[GDB_REGNO_CS3] = "cs3",
+	[GDB_REGNO_CS4] = "cs4",
+	[GDB_REGNO_CS5] = "cs5",
+	[GDB_REGNO_CS6] = "cs6",
+	[GDB_REGNO_CS7] = "cs7",
+	[GDB_REGNO_CS8] = "cs8",
+	[GDB_REGNO_CS9] = "cs9",
+	[GDB_REGNO_CS10] = "cs10",
+	[GDB_REGNO_CS11] = "cs11",
+	[GDB_REGNO_CT3] = "ct3",
+	[GDB_REGNO_CT4] = "ct4",
+	[GDB_REGNO_CT5] = "ct5",
+	[GDB_REGNO_CT6] = "ct6",
+	[GDB_REGNO_PCC] = "pcc",
+	[GDB_REGNO_DDC] = "ddc",
+
 	#define DECLARE_CSR(csr_name, number)[(number) + GDB_REGNO_CSR0] = #csr_name,
 	#include "encoding.h"
 	#include "encoding_cheri.h"
@@ -194,6 +230,10 @@ const char *riscv_reg_gdb_regno_name(const struct target *target, enum gdb_regno
 		info->reg_names[regno] = init_reg_name_with_prefix("v", regno - GDB_REGNO_V0);
 		return info->reg_names[regno];
 	}
+	if (regno >= GDB_REGNO_C0 && regno <= GDB_REGNO_C31) {
+		info->reg_names[regno] = init_reg_name_with_prefix("c", regno - GDB_REGNO_CNULL);
+		return info->reg_names[regno];
+	}
 	if (regno >= GDB_REGNO_CSR0 && regno <= GDB_REGNO_CSR4095) {
 		init_custom_csr_names(target);
 		if (!info->reg_names[regno])
@@ -233,6 +273,14 @@ static struct reg_feature *gdb_regno_feature(uint32_t regno)
 			.name = "org.gnu.gdb.riscv.vector"
 		};
 		return &feature_vector;
+	}
+	if ((regno >= GDB_REGNO_C0 && regno <= GDB_REGNO_C31) ||
+			regno == GDB_REGNO_PCC ||
+			regno == GDB_REGNO_DDC) {
+		static struct reg_feature feature_cheri = {
+			.name = "org.gnu.gdb.riscv.cheri"
+		};
+		return &feature_cheri;
 	}
 	if (regno >= GDB_REGNO_CSR0 && regno <= GDB_REGNO_CSR4095) {
 		static struct reg_feature feature_csr = {
@@ -289,9 +337,45 @@ static struct reg_data_type *gdb_regno_reg_data_type(const struct target *target
 			&type_ieee_single_double :
 			&type_ieee_single;
 	}
+	if ((regno >= GDB_REGNO_C0 && regno <= GDB_REGNO_C31) ||
+		regno == GDB_REGNO_DDC) {
+		static struct reg_data_type type_data_capability = {
+			.type = REG_TYPE_DATA_CAPABILITY, .id = "data_capability" };
+		return &type_data_capability;
+	}
+	if (regno == GDB_REGNO_PCC) {
+		static struct reg_data_type type_code_capability = {
+			.type = REG_TYPE_CODE_CAPABILITY, .id = "code_capability" };
+		return &type_code_capability;
+	}
 	if (regno >= GDB_REGNO_V0 && regno <= GDB_REGNO_V31) {
 		RISCV_INFO(info);
 		return &info->type_vector;
+	}
+	if (regno >= GDB_REGNO_CSR0 && regno <= GDB_REGNO_CSR4095) {
+		const unsigned int csr_number = regno - GDB_REGNO_CSR0;
+		static struct reg_data_type type_data_capability = {
+			.type = REG_TYPE_DATA_CAPABILITY, .id = "data_capability" };
+		static struct reg_data_type type_code_capability = {
+			.type = REG_TYPE_CODE_CAPABILITY, .id = "code_capability" };
+		/* CHERI CSR support */
+		switch (csr_number) {
+			case CSR_DPC:
+			case CSR_MTVEC:
+			case CSR_MEPC:
+			case CSR_STVEC:
+			case CSR_SEPC:
+			case CSR_JVT:
+				return riscv_supports_zcheripurecap(target) ? &type_code_capability : NULL;
+			case CSR_DSCRATCH0:
+			case CSR_DSCRATCH1:
+			case CSR_MSCRATCH:
+			case CSR_SSCRATCH:
+			case CSR_DDC:
+			case CSR_DDDC:
+			case CSR_DINFC:
+				return riscv_supports_zcheripurecap(target) ? &type_data_capability : NULL;
+		}
 	}
 	return NULL;
 }
@@ -311,6 +395,11 @@ static const char *gdb_regno_group(uint32_t regno)
 		return "csr";
 	if (regno >= GDB_REGNO_V0 && regno <= GDB_REGNO_V31)
 		return "vector";
+	if ((regno >= GDB_REGNO_C0 && regno <= GDB_REGNO_C31) ||
+			regno == GDB_REGNO_PCC ||
+			regno == GDB_REGNO_DDC) {
+		return "general";
+	}
 	assert(regno >= GDB_REGNO_COUNT);
 	return "custom";
 }
@@ -337,8 +426,35 @@ uint32_t gdb_regno_size(const struct target *target, uint32_t regno)
 			case CSR_SCOUNTEREN:
 			case CSR_MCOUNTEREN:
 				return 32;
+
+			/* CHERI CSR support */
+			case CSR_DPC:
+			case CSR_DSCRATCH0:
+			case CSR_DSCRATCH1:
+
+			case CSR_MTVEC:
+			case CSR_MSCRATCH:
+			case CSR_MEPC:
+
+			case CSR_STVEC:
+			case CSR_SSCRATCH:
+			case CSR_SEPC:
+
+			case CSR_JVT:
+				return riscv_supports_zcheripurecap(target) ? riscv_clen(target) + 1 : riscv_xlen(target);
+
+			case CSR_DDC:
+			case CSR_DDDC:
+			case CSR_DINFC:
+				return riscv_clen(target) + 1;
 		}
 	}
+	/* CHERI Register support */
+	if ((regno >= GDB_REGNO_C0 && regno <= GDB_REGNO_C31) ||
+			regno == GDB_REGNO_PCC ||
+			regno == GDB_REGNO_DDC)
+		return riscv_clen(target) + 1;
+
 	return riscv_xlen(target);
 }
 
@@ -390,6 +506,10 @@ bool riscv_reg_impl_gdb_regno_exist(const struct target *target, uint32_t regno)
 		return riscv_supports_extension(target, 'F');
 	if (regno >= GDB_REGNO_V0 && regno <= GDB_REGNO_V31)
 		return vlenb_exists(target);
+	if ((regno >= GDB_REGNO_C0 && regno <= GDB_REGNO_C31) ||
+			regno == GDB_REGNO_PCC ||
+			regno == GDB_REGNO_DDC)
+		return riscv_supports_zcheripurecap(target);
 	if (regno >= GDB_REGNO_COUNT)
 		return true;
 	assert(regno >= GDB_REGNO_CSR0 && regno <= GDB_REGNO_CSR4095);
@@ -417,6 +537,9 @@ bool riscv_reg_impl_gdb_regno_exist(const struct target *target, uint32_t regno)
 		case CSR_STVAL:
 		case CSR_SATP:
 			return riscv_supports_extension(target, 'S');
+		case CSR_STVAL2:
+			return riscv_supports_extension(target, 'S') &&
+				riscv_supports_zcheripurecap(target);
 		case CSR_MEDELEG:
 		case CSR_MIDELEG:
 			/* "In systems with only M-mode, or with both M-mode and
@@ -543,6 +666,10 @@ bool riscv_reg_impl_gdb_regno_exist(const struct target *target, uint32_t regno)
 			return reg_exists(target, GDB_REGNO_MTOPI) &&
 				riscv_xlen(target) == 32 &&
 				riscv_supports_extension(target, 'H');
+		case CSR_DDDC:
+		case CSR_DDC:
+		case CSR_DINFC:
+			return riscv_supports_zcheripurecap(target);
 	}
 	return is_known_standard_csr(csr_number);
 }
@@ -789,7 +916,11 @@ int riscv_reg_flush_all(struct target *target)
 	for (unsigned int number = target->reg_cache->num_regs; number-- > 0; ) {
 		struct reg *reg = riscv_reg_impl_cache_entry(target, number);
 		if (reg->valid && reg->dirty) {
-			riscv_reg_t value = buf_get_u64(reg->value, 0, reg->size);
+			riscv_reg_t value = 0;
+			if (register_is_cheri_reg(reg))
+				value = buf_get_u64(reg->value + 1, 0, riscv_xlen(target));
+			else
+				value = buf_get_u64(reg->value, 0, reg->size);
 
 			LOG_TARGET_DEBUG(target, "%s is dirty; write back 0x%" PRIx64,
 					reg->name, value);
@@ -823,8 +954,10 @@ static int riscv_set_or_write_register(struct target *target,
 
 	keep_alive();
 
-	if (regid == GDB_REGNO_PC) {
+	if (regid == GDB_REGNO_PC || regid == GDB_REGNO_PCC) {
 		return riscv_set_or_write_register(target, GDB_REGNO_DPC, value, write_through);
+	} else if (regid == GDB_REGNO_DDC) {
+		return riscv_set_or_write_register(target, GDB_REGNO_DDDC, value, write_through);
 	} else if (regid == GDB_REGNO_PRIV) {
 		riscv_reg_t dcsr;
 
@@ -850,8 +983,14 @@ static int riscv_set_or_write_register(struct target *target,
 		return riscv013_set_register(target, regid, value);
 	}
 
+	riscv_reg_t reg_value = 0;
+	if (register_is_cheri_reg(reg))
+		reg_value = buf_get_u64(reg->value + 1, 0, riscv_xlen(target));
+	else
+		reg_value = buf_get_u64(reg->value, 0, reg->size);
+
 	const bool need_to_write = !reg->valid || reg->dirty ||
-		value != buf_get_u64(reg->value, 0, reg->size);
+		value != reg_value;
 	const bool cacheable = riscv_reg_impl_gdb_regno_cacheable(regid, need_to_write);
 
 	if (!cacheable || (write_through && need_to_write)) {
@@ -961,8 +1100,10 @@ int riscv_reg_get(struct target *target, riscv_reg_t *value,
 
 	keep_alive();
 
-	if (regid == GDB_REGNO_PC)
+	if (regid == GDB_REGNO_PC || regid == GDB_REGNO_PCC)
 		return riscv_reg_get(target, value, GDB_REGNO_DPC);
+	if (regid == GDB_REGNO_DDC)
+		return riscv_reg_get(target, value, GDB_REGNO_DDDC);
 
 	struct reg *reg = riscv_reg_impl_cache_entry(target, regid);
 	assert(riscv_reg_impl_is_initialized(reg));
@@ -972,7 +1113,11 @@ int riscv_reg_get(struct target *target, riscv_reg_t *value,
 	}
 
 	if (reg->valid) {
-		*value = buf_get_u64(reg->value, 0, reg->size);
+		if (register_is_cheri_reg(reg))
+			*value = buf_get_u64(reg->value + 1, 0, riscv_xlen(target));
+		else
+			*value = buf_get_u64(reg->value, 0, reg->size);
+
 		LOG_TARGET_DEBUG(target, "Read %s: 0x%" PRIx64 " (cached)", reg->name,
 				*value);
 		return ERROR_OK;
@@ -982,7 +1127,17 @@ int riscv_reg_get(struct target *target, riscv_reg_t *value,
 	if (riscv013_get_register(target, value, regid) != ERROR_OK)
 		return ERROR_FAIL;
 
-	buf_set_u64(reg->value, 0, reg->size, *value);
+	if (register_is_cheri_reg(reg)) {
+		/* TODO: Access real machine capability register. Temporarily put an invalid tag
+		 * and meta to form a fake capability until it's fixed.
+		 */
+		buf_set_u64(reg->value, 0, 8, 0); /* tag */
+		buf_set_u64(reg->value + 1, 0, riscv_xlen(target), *value); /* address/data */
+		buf_set_u64(reg->value + 1 + riscv_xlen(target) / 8, 0,
+						riscv_xlen(target), 0); /* meta */
+	} else {
+		buf_set_u64(reg->value, 0, reg->size, *value);
+	}
 	reg->valid = riscv_reg_impl_gdb_regno_cacheable(regid, /* is write? */ false) &&
 		target->state == TARGET_HALTED;
 	reg->dirty = false;

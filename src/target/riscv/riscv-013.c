@@ -5154,6 +5154,18 @@ int riscv013_get_register(struct target *target,
 		return ERROR_OK;
 	}
 
+	if (rid == GDB_REGNO_DDDC) {
+		LOG_TARGET_ERROR(target, "Not Yet Support accessing DDC CSR");
+		*value = 0;
+		return ERROR_OK;
+	}
+
+	/* TODO: Access the capability registers from machine. Temporarily use the general
+	 * purpose registers to form the capability until it's fixed.
+	 */
+	if (rid >= GDB_REGNO_C0 && rid <= GDB_REGNO_C31)
+		rid -= GDB_REGNO_C0;
+
 	LOG_TARGET_DEBUG(target, "reading register %s",	riscv_reg_gdb_regno_name(target, rid));
 
 	if (dm013_select_target(target) != ERROR_OK)
@@ -5170,6 +5182,17 @@ int riscv013_get_register(struct target *target,
 int riscv013_set_register(struct target *target, enum gdb_regno rid,
 		riscv_reg_t value)
 {
+	if (rid == GDB_REGNO_DDDC) {
+		LOG_TARGET_ERROR(target, "Not Yet Support accessing DDC CSR");
+		return ERROR_OK;
+	}
+
+	/* TODO: Access the capability registers from machine. Temporarily use the general
+	 * purpose registers to form the capability until it's fixed.
+	 */
+	if (rid >= GDB_REGNO_C0 && rid <= GDB_REGNO_C31)
+		rid -= GDB_REGNO_C0;
+
 	LOG_TARGET_DEBUG(target, "writing 0x%" PRIx64 " to register %s",
 			value, riscv_reg_gdb_regno_name(target, rid));
 
