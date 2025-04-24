@@ -186,6 +186,12 @@ struct riscv_info {
 	 * Zve* extensions implement vector registers without setting misa.V. */
 	unsigned int vlenb;
 
+	/* Cached value of clen. 0 indicates there is no cheri support. */
+	unsigned int clen;
+
+	/* Support zcherihybrid */
+	bool zcherihybrid_supported;
+
 	/* The number of triggers per hart. */
 	unsigned int trigger_count;
 
@@ -459,11 +465,20 @@ int riscv_openocd_step(
 
 bool riscv_supports_extension(const struct target *target, char letter);
 
+bool riscv_supports_zcheripurecap(const struct target *target);
+
+bool riscv_supports_zcherihybrid(const struct target *target);
+
+bool riscv_supports_zcheripurecap_only(const struct target *target);
+
 /* Returns XLEN for the given (or current) hart. */
 unsigned int riscv_xlen(const struct target *target);
 
 /* Returns VLENB for the given (or current) hart. */
 unsigned int riscv_vlenb(const struct target *target);
+
+/* Returns CLEN for the given (or current) hart. */
+unsigned int riscv_clen(const struct target *target);
 
 /*** Support functions for the RISC-V 'RTOS', which provides multihart support
  * without requiring multiple targets.  */

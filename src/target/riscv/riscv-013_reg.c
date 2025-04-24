@@ -11,6 +11,7 @@
 #include "riscv_reg_impl.h"
 #include "riscv-013.h"
 #include "debug_defines.h"
+#include "program.h"
 #include <helper/time_support.h>
 
 static int riscv013_reg_get(struct reg *reg)
@@ -119,6 +120,50 @@ static int examine_xlen(struct target *target)
 	if (res == ERROR_TIMEOUT_REACHED)
 		return ERROR_FAIL;
 	r->xlen = 32;
+
+	return ERROR_OK;
+}
+
+static int examine_clen(struct target *target)
+{
+	RISCV_INFO(r);
+
+	bool examine_cheri = true;
+	r->zcherihybrid_supported = false;
+
+	/* Detect Zcheripurecap by executing a Zcheripurecap instruction and
+	 * see if it trigger an exception or not
+	 */
+	struct riscv_program program;
+	riscv_program_init(&program, target);
+	if (examine_cheri && riscv_program_insert(&program, gchi(ZERO, ZERO)) != ERROR_OK)
+		examine_cheri = false;
+
+	if (examine_cheri && riscv_program_exec(&program, target) != ERROR_OK)
+		examine_cheri = false;
+
+	if (examine_cheri) {
+		r->clen = r->xlen * 2;
+
+		/* Detect Zcherihybrid by executing a Zcherihybrid instruction and
+		* see if it trigger an exception or not
+		*/
+		riscv_program_init(&program, target);
+		if (examine_cheri && riscv_program_insert(&program, scmode(ZERO, ZERO, ZERO)) != ERROR_OK)
+			examine_cheri = false;
+
+		if (examine_cheri && riscv_program_exec(&program, target) != ERROR_OK)
+			examine_cheri = false;
+
+		if (examine_cheri)
+			r->zcherihybrid_supported = true;
+
+		LOG_TARGET_INFO(target, "%s detected (CLEN=%d)", r->zcherihybrid_supported ?
+				"Zcherihybrid" : "Zcheripurecap", r->clen);
+	} else {
+		r->clen = 0;
+		LOG_TARGET_INFO(target, "No CHERI detected");
+	}
 
 	return ERROR_OK;
 }
@@ -304,6 +349,10 @@ int riscv013_reg_examine_all(struct target *target)
 	assert(target->state == TARGET_HALTED);
 
 	res = examine_xlen(target);
+	if (res != ERROR_OK)
+		return res;
+
+	res = examine_clen(target);
 	if (res != ERROR_OK)
 		return res;
 

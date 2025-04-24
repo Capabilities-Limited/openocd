@@ -238,6 +238,7 @@ typedef struct {
 	struct ac_cache ac_not_supported_cache;
 
 	/* Some fields from hartinfo. */
+	uint8_t nscratch;
 	uint8_t datasize;
 	uint8_t dataaccess;
 	int16_t dataaddr;
@@ -1990,6 +1991,37 @@ static int examine_dm(struct target *target)
 	return ERROR_OK;
 }
 
+static int examine_cheri_access(struct target *target)
+{
+	RISCV013_INFO(info);
+
+	/*   TODO: The Sdext implementation for Zcheripurecap will be changed likely as the CHERI extension
+	 *   specification has been ratified yet.
+	 *   The following features, which are optional in Sdext, must be implemented for use with Zcheripurecap
+	 *   in current CHERI extension specification (v0.8.3):
+	 *   - The hartinfo register must be implemented.
+	 *   - All harts which support Zcheripurecap must provide hartinfo.nscratch of at least 1 and
+	 *     implement the dscratch0c register.
+	 *   - All harts which support Zcheripurecap must provide hartinfo.datasize of at least 1 and
+	 *     hartinfo.dataaccess of 0.
+	 *   - The program buffer must be implemented, with abstractcs.progbufsize of at least 4 if
+	 *     dmstatus.impebreak is 1, or at least 5 if dmstatus.impebreak is 0.
+	 *
+	 * See https://github.com/riscv/riscv-cheri/releases/tag/v0.8.3-prerelease */
+
+	if (info->nscratch == 0 || info->dataaccess != 0 || info->datasize == 0 ||
+			!has_sufficient_progbuf(target, 5)) {
+		LOG_TARGET_ERROR(target, "CHERI debugger is not available on this target. As the "
+		    "Sdext implementation does not fulfill the requirments for Sdext with "
+			"Zcheripurecap. (nscratch=%d, dataaccess=%d, datasize=%d, progbufsize=%d, "
+			"impebreak=%d).", info->nscratch, info->dataaccess, info->datasize,
+			info->progbufsize, info->impebreak);
+		return ERROR_FAIL;
+	}
+
+	return ERROR_OK;
+}
+
 static int examine(struct target *target)
 {
 	/* We reset target state in case if something goes wrong during examine:
@@ -2080,6 +2112,7 @@ static int examine(struct target *target)
 	if (dm_read(target, &hartinfo, DM_HARTINFO) != ERROR_OK)
 		return ERROR_FAIL;
 
+	info->nscratch = get_field(hartinfo, DM_HARTINFO_NSCRATCH);
 	info->datasize = get_field(hartinfo, DM_HARTINFO_DATASIZE);
 	info->dataaccess = get_field(hartinfo, DM_HARTINFO_DATAACCESS);
 	info->dataaddr = get_field(hartinfo, DM_HARTINFO_DATAADDR);
@@ -2138,6 +2171,9 @@ static int examine(struct target *target)
 	if (result != ERROR_OK)
 		return result;
 
+	if (riscv_supports_zcheripurecap(target) && examine_cheri_access(target) != ERROR_OK)
+		return ERROR_FAIL;
+
 	if (set_dcsr_ebreak(target, false) != ERROR_OK)
 		return ERROR_FAIL;
 
@@ -2166,6 +2202,9 @@ static int examine(struct target *target)
 	 * We will need to update those suites if we want to change that text. */
 	LOG_TARGET_INFO(target, "Examined RISC-V core");
 	LOG_TARGET_INFO(target, " XLEN=%d, misa=0x%" PRIx64, r->xlen, r->misa);
+	if (riscv_supports_zcheripurecap(target))
+		LOG_TARGET_INFO(target, " CHERI=%s", riscv_supports_zcherihybrid(target) ?
+			"Zcherihybrid" : "Zcheripurecap");
 	return ERROR_OK;
 }
 

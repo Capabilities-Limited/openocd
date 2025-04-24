@@ -1545,6 +1545,10 @@ static int examine(struct target *target)
 		return ERROR_FAIL;
 	}
 
+	/* RISC-V Debug Specification 0.11 does not support CHERI */
+	r->clen = 0;
+	r->zcherihybrid_supported = false;
+
 	/* Pretend this is a 32-bit system until we have found out the true value. */
 	r->xlen = 32;
 

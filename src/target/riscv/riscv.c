@@ -6054,6 +6054,22 @@ bool riscv_supports_extension(const struct target *target, char letter)
 	return r->misa & BIT(num);
 }
 
+bool riscv_supports_zcheripurecap(const struct target *target)
+{
+	return riscv_clen(target) > 0;
+}
+
+bool riscv_supports_zcherihybrid(const struct target *target)
+{
+	RISCV_INFO(r);
+	return r->zcherihybrid_supported;
+}
+
+bool riscv_supports_zcheripurecap_only(const struct target *target)
+{
+	return riscv_supports_zcheripurecap(target) && !riscv_supports_zcherihybrid(target);
+}
+
 unsigned int riscv_xlen(const struct target *target)
 {
 	RISCV_INFO(r);
@@ -6064,6 +6080,12 @@ unsigned int riscv_vlenb(const struct target *target)
 {
 	RISCV_INFO(r);
 	return r->vlenb;
+}
+
+unsigned int riscv_clen(const struct target *target)
+{
+	RISCV_INFO(r);
+	return r->clen;
 }
 
 int riscv_get_hart_state(struct target *target, enum riscv_hart_state *state)
