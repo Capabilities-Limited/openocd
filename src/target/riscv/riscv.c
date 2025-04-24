@@ -5498,9 +5498,9 @@ static COMMAND_HELPER(report_reserved_triggers, struct target *target)
 	if (riscv_enumerate_triggers(target) != ERROR_OK)
 		return ERROR_FAIL;
 	const char *separator = "";
-	for (riscv_reg_t t = 0; t < r->trigger_count; ++t) {
+	for (unsigned int t = 0; t < r->trigger_count; ++t) {
 		if (r->reserved_triggers[t]) {
-			command_print_sameline(CMD, "%s%" PRIu64, separator, t);
+			command_print_sameline(CMD, "%s%d", separator, t);
 			separator = " ";
 		}
 	}
