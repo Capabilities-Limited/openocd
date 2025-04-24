@@ -37,13 +37,17 @@ void riscv_reg_cache_invalidate_all(struct target *target);
  * (write-back mode).
  */
 int riscv_reg_set(struct target *target, enum gdb_regno i, riscv_reg_t v);
+int riscv_reg_set_value(struct target *target, enum gdb_regno i, riscv_reg_value_t v);
 /**
  * Set the register value and immediately write it to the target
  * (write-through mode).
  */
 int riscv_reg_write(struct target *target, enum gdb_regno i, riscv_reg_t v);
+int riscv_reg_write_value(struct target *target, enum gdb_regno i, riscv_reg_value_t v);
 /** Get register, from the cache if it's in there. */
 int riscv_reg_get(struct target *target, riscv_reg_t *value,
+		enum gdb_regno r);
+int riscv_reg_get_value(struct target *target, riscv_reg_value_t *value,
 		enum gdb_regno r);
 
 #endif /* OPENOCD_TARGET_RISCV_RISCV_REG_H */

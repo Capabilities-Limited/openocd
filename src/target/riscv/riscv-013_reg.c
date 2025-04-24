@@ -10,6 +10,7 @@
 #include "riscv_reg.h"
 #include "riscv_reg_impl.h"
 #include "riscv-013.h"
+#include "riscv_cheri.h"
 #include "debug_defines.h"
 #include "program.h"
 #include <helper/time_support.h>
@@ -31,20 +32,14 @@ static int riscv013_reg_get(struct reg *reg)
 
 		reg->valid = riscv_reg_impl_gdb_regno_cacheable(reg->number, /* is write? */ false);
 	} else if (register_is_cheri_reg(reg)) {
-		/* TODO: Access real machine capability register. Temporarily put an invalid tag
-		 * and meta to form a fake capability until it's fixed.
-		 */
-		uint64_t value;
+		riscv_reg_t value = {0};
 		int result = riscv_reg_get(target, &value, reg->number);
 		if (result != ERROR_OK)
 			return result;
-		buf_set_u64(reg->value, 0, 8, 0); /* tag */
-		buf_set_u64(reg->value + 1, 0, riscv_xlen(target), value); /* address/data */
-		buf_set_u64(reg->value + 1 + riscv_xlen(target) / 8, 0,
-						riscv_xlen(target), 0); /* meta */
+		buf_set_cheri_capability(reg->value, value, riscv_clen(target));
 	} else {
 		uint64_t value;
-		int result = riscv_reg_get(target, &value, reg->number);
+		int result = riscv_reg_get_value(target, &value, reg->number);
 		if (result != ERROR_OK)
 			return result;
 		buf_set_u64(reg->value, 0, reg->size, value);
@@ -78,13 +73,14 @@ static int riscv013_reg_set(struct reg *reg, uint8_t *buf)
 		memcpy(reg->value, buf, DIV_ROUND_UP(reg->size, 8));
 		reg->valid = riscv_reg_impl_gdb_regno_cacheable(reg->number, /* is write? */ true);
 	} else if (register_is_cheri_reg(reg)) {
-		const riscv_reg_t value = buf_get_u64(buf + 1, 0, riscv_xlen(target)); /* address/data */
+		riscv_reg_t value = {0};
+		buf_get_cheri_capability(buf, &value, riscv_clen(target));
 		if (riscv_reg_set(target, reg->number, value) != ERROR_OK)
 			return ERROR_FAIL;
 		memcpy(reg->value, buf, DIV_ROUND_UP(reg->size, 8));
 	} else {
-		const riscv_reg_t value = buf_get_u64(buf, 0, reg->size);
-		if (riscv_reg_set(target, reg->number, value) != ERROR_OK)
+		const riscv_reg_value_t value = buf_get_u64(buf, 0, reg->size);
+		if (riscv_reg_set_value(target, reg->number, value) != ERROR_OK)
 			return ERROR_FAIL;
 		memcpy(reg->value, buf, DIV_ROUND_UP(reg->size, 8));
 	}
@@ -200,8 +196,8 @@ static int examine_vlenb(struct target *target)
 	if (res != ERROR_OK)
 		return res;
 
-	riscv_reg_t vlenb_val;
-	if (riscv_reg_get(target, &vlenb_val, GDB_REGNO_VLENB) != ERROR_OK) {
+	riscv_reg_value_t vlenb_val;
+	if (riscv_reg_get_value(target, &vlenb_val, GDB_REGNO_VLENB) != ERROR_OK) {
 		if (riscv_supports_extension(target, 'V'))
 			LOG_TARGET_WARNING(target, "Couldn't read vlenb; vector register access won't work.");
 		r->vlenb = 0;
@@ -257,9 +253,9 @@ static int check_misa_mxl(const struct target *target)
 		return ERROR_OK;
 	}
 	const unsigned int dxlen = riscv_xlen(target);
-	assert(dxlen <= sizeof(riscv_reg_t) * CHAR_BIT);
+	assert(dxlen <= sizeof(riscv_reg_value_t) * CHAR_BIT);
 	assert(dxlen >= 2);
-	const riscv_reg_t misa_mxl_mask = (riscv_reg_t)0x3 << (dxlen - 2);
+	const riscv_reg_value_t misa_mxl_mask = (riscv_reg_value_t)0x3 << (dxlen - 2);
 	const unsigned int mxl = get_field(r->misa, misa_mxl_mask);
 	if (mxl == MISA_MXL_INVALID) {
 		/* This is not an error!
@@ -321,7 +317,7 @@ static int examine_misa(struct target *target)
 	if (res != ERROR_OK)
 		return res;
 
-	res = riscv_reg_get(target, &r->misa, GDB_REGNO_MISA);
+	res = riscv_reg_get_value(target, &r->misa, GDB_REGNO_MISA);
 	if (res != ERROR_OK)
 		return res;
 	return check_misa_mxl(target);
@@ -429,7 +425,7 @@ int riscv013_reg_save(struct target *target, enum gdb_regno regid)
 			"Only cacheable registers can be saved.");
 
 	RISCV_INFO(r);
-	riscv_reg_t value;
+	riscv_reg_t value = {0};
 	if (!target->reg_cache) {
 		assert(!target_was_examined(target));
 		/* To create register cache it is needed to examine the target first,

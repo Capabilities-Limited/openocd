@@ -1230,13 +1230,13 @@ static int update_mstatus_actual(struct target *target)
 
 	/* Force reading the register. In that process mstatus_actual will be
 	 * updated. */
-	riscv_reg_t mstatus;
+	riscv_reg_value_t mstatus;
 	return riscv011_get_register(target, &mstatus, GDB_REGNO_MSTATUS);
 }
 
 /*** OpenOCD target functions. ***/
 
-static int register_read(struct target *target, riscv_reg_t *value, int regnum)
+static int register_read(struct target *target, riscv_reg_value_t *value, int regnum)
 {
 	riscv011_info_t *info = get_info(target);
 	if (regnum >= GDB_REGNO_CSR0 && regnum <= GDB_REGNO_CSR4095) {
@@ -1335,7 +1335,7 @@ static int register_write(struct target *target, unsigned int number,
 	return ERROR_OK;
 }
 
-int riscv011_get_register(struct target *target, riscv_reg_t *value,
+int riscv011_get_register(struct target *target, riscv_reg_value_t *value,
 		enum gdb_regno regid)
 {
 	riscv011_info_t *info = get_info(target);
@@ -1384,7 +1384,7 @@ int riscv011_get_register(struct target *target, riscv_reg_t *value,
 /* This function is intended to handle accesses to registers through register
  * cache. */
 int riscv011_set_register(struct target *target, enum gdb_regno regid,
-		riscv_reg_t value)
+		riscv_reg_value_t value)
 {
 	assert(target->reg_cache);
 	assert(target->reg_cache->reg_list);

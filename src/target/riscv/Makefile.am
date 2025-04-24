@@ -18,6 +18,7 @@ noinst_LTLIBRARIES += %D%/libriscv.la
        %D%/riscv-011_reg.h \
        %D%/riscv-013.h \
        %D%/riscv-013_reg.h \
+       %D%/riscv-cheri.h \
        %D%/batch.c \
        %D%/program.c \
        %D%/riscv-011.c \

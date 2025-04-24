@@ -12,7 +12,7 @@
 static int riscv011_reg_get(struct reg *reg)
 {
 	struct target * const target = riscv_reg_impl_get_target(reg);
-	riscv_reg_t value;
+	riscv_reg_value_t value;
 	const int result = riscv011_get_register(target, &value, reg->number);
 	if (result != ERROR_OK)
 		return result;
@@ -22,7 +22,7 @@ static int riscv011_reg_get(struct reg *reg)
 
 static int riscv011_reg_set(struct reg *reg, uint8_t *buf)
 {
-	const riscv_reg_t value = buf_get_u64(buf, 0, reg->size);
+	const riscv_reg_value_t value = buf_get_u64(buf, 0, reg->size);
 	struct target * const target = riscv_reg_impl_get_target(reg);
 	return riscv011_set_register(target, reg->number, value);
 }

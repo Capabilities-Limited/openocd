@@ -132,11 +132,11 @@ struct trigger {
 
 struct tdata2_cache {
 	struct list_head elem_tdata2;
-	riscv_reg_t tdata2;
+	riscv_reg_value_t tdata2;
 };
 
 struct tdata1_cache {
-	riscv_reg_t tdata1;
+	riscv_reg_value_t tdata1;
 	struct list_head tdata2_cache_head;
 	struct list_head elem_tdata1;
 };
@@ -294,9 +294,9 @@ static enum riscv_halt_reason riscv_halt_reason(struct target *target);
 static void riscv_info_init(struct target *target, struct riscv_info *r);
 static int riscv_step_rtos_hart(struct target *target);
 
-static const riscv_reg_t mstatus_ie_mask = MSTATUS_MIE | MSTATUS_HIE | MSTATUS_SIE | MSTATUS_UIE;
-static int riscv_interrupts_disable(struct target *target, riscv_reg_t *old_mstatus);
-static int riscv_interrupts_restore(struct target *target, riscv_reg_t old_mstatus);
+static const riscv_reg_value_t mstatus_ie_mask = MSTATUS_MIE | MSTATUS_HIE | MSTATUS_SIE | MSTATUS_UIE;
+static int riscv_interrupts_disable(struct target *target, riscv_reg_value_t *old_mstatus);
+static int riscv_interrupts_restore(struct target *target, riscv_reg_value_t old_mstatus);
 
 static void riscv_sample_buf_maybe_add_timestamp(struct target *target, bool before)
 {
@@ -774,8 +774,8 @@ static void trigger_from_breakpoint(struct trigger *trigger,
 
 static bool can_use_napot_match(struct trigger *trigger)
 {
-	riscv_reg_t addr = trigger->address;
-	riscv_reg_t size = trigger->length;
+	riscv_reg_value_t addr = trigger->address;
+	riscv_reg_value_t size = trigger->length;
 	bool size_power_of_2 = (size & (size - 1)) == 0;
 	bool addr_aligned = (addr & (size - 1)) == 0;
 	return size > 1 && size_power_of_2 && addr_aligned;
@@ -828,9 +828,9 @@ static int find_first_trigger_by_id(struct target *target, int unique_id)
 	return -1;
 }
 
-static unsigned int count_trailing_ones(riscv_reg_t reg)
+static unsigned int count_trailing_ones(riscv_reg_value_t reg)
 {
-	const unsigned int riscv_reg_bits = sizeof(riscv_reg_t) * CHAR_BIT;
+	const unsigned int riscv_reg_bits = sizeof(riscv_reg_value_t) * CHAR_BIT;
 	for (unsigned int i = 0; i < riscv_reg_bits; i++) {
 		if ((1 & (reg >> i)) == 0)
 			return i;
@@ -838,7 +838,7 @@ static unsigned int count_trailing_ones(riscv_reg_t reg)
 	return riscv_reg_bits;
 }
 
-static int set_trigger(struct target *target, unsigned int idx, riscv_reg_t tdata1, riscv_reg_t tdata2)
+static int set_trigger(struct target *target, unsigned int idx, riscv_reg_value_t tdata1, riscv_reg_value_t tdata2)
 {
 	RISCV_INFO(r);
 	assert(r->reserved_triggers);
@@ -849,27 +849,27 @@ static int set_trigger(struct target *target, unsigned int idx, riscv_reg_t tdat
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 
-	riscv_reg_t tdata1_rb, tdata2_rb;
+	riscv_reg_value_t tdata1_rb, tdata2_rb;
 	// Select which trigger to use
-	if (riscv_reg_set(target, GDB_REGNO_TSELECT, idx) != ERROR_OK)
+	if (riscv_reg_set_value(target, GDB_REGNO_TSELECT, idx) != ERROR_OK)
 		return ERROR_FAIL;
 
 	// Disable the trigger by writing 0 to it
-	if (riscv_reg_set(target, GDB_REGNO_TDATA1, 0) != ERROR_OK)
+	if (riscv_reg_set_value(target, GDB_REGNO_TDATA1, 0) != ERROR_OK)
 		return ERROR_FAIL;
 
 	// Set trigger data for tdata2 (and tdata3 if it was supported)
-	if (riscv_reg_set(target, GDB_REGNO_TDATA2, tdata2) != ERROR_OK)
+	if (riscv_reg_set_value(target, GDB_REGNO_TDATA2, tdata2) != ERROR_OK)
 		return ERROR_FAIL;
 
 	// Set trigger data for tdata1
-	if (riscv_reg_set(target, GDB_REGNO_TDATA1, tdata1) != ERROR_OK)
+	if (riscv_reg_set_value(target, GDB_REGNO_TDATA1, tdata1) != ERROR_OK)
 		return ERROR_FAIL;
 
 	// Read back tdata1, tdata2, (tdata3), and check if the configuration is supported
-	if (riscv_reg_get(target, &tdata1_rb, GDB_REGNO_TDATA1) != ERROR_OK)
+	if (riscv_reg_get_value(target, &tdata1_rb, GDB_REGNO_TDATA1) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_reg_get(target, &tdata2_rb, GDB_REGNO_TDATA2) != ERROR_OK)
+	if (riscv_reg_get_value(target, &tdata2_rb, GDB_REGNO_TDATA2) != ERROR_OK)
 		return ERROR_FAIL;
 
 	const uint32_t type = get_field(tdata1, CSR_TDATA1_TYPE(riscv_xlen(target)));
@@ -879,14 +879,14 @@ static int set_trigger(struct target *target, unsigned int idx, riscv_reg_t tdat
 	 * For mcontrol triggers, we don't care about
 	 * the value in the read-only "maskmax" field.
 	 */
-	const riscv_reg_t tdata1_ignore_mask = is_mcontrol ? CSR_MCONTROL_MASKMAX(riscv_xlen(target)) : 0;
+	const riscv_reg_value_t tdata1_ignore_mask = is_mcontrol ? CSR_MCONTROL_MASKMAX(riscv_xlen(target)) : 0;
 	const bool tdata1_config_denied = (tdata1 & ~tdata1_ignore_mask) != (tdata1_rb & ~tdata1_ignore_mask);
 
 	/* Determine if tdata1.maxmask is sufficient
 	 * (only relevant for mcontrol triggers and NAPOT match type)
 	 */
 	bool unsupported_napot_range = false;
-	riscv_reg_t maskmax_value = 0;
+	riscv_reg_value_t maskmax_value = 0;
 	if (!tdata1_config_denied) {
 		const bool is_napot_match = get_field(tdata1_rb, CSR_MCONTROL_MATCH) == CSR_MCONTROL_MATCH_NAPOT;
 		if (is_mcontrol && is_napot_match) {
@@ -916,7 +916,7 @@ static int set_trigger(struct target *target, unsigned int idx, riscv_reg_t tdat
 				"The requested NAPOT match range (tdata2=0x%" PRIx64 ") exceeds maskmax_value=0x%" PRIx64,
 				tdata2, maskmax_value);
 
-		if (riscv_reg_set(target, GDB_REGNO_TDATA1, 0) != ERROR_OK)
+		if (riscv_reg_set_value(target, GDB_REGNO_TDATA1, 0) != ERROR_OK)
 			return ERROR_FAIL;
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
@@ -927,7 +927,7 @@ static int set_trigger(struct target *target, unsigned int idx, riscv_reg_t tdat
 static int maybe_add_trigger_t1(struct target *target, struct trigger *trigger)
 {
 	int ret;
-	riscv_reg_t tdata1, tdata2;
+	riscv_reg_value_t tdata1, tdata2;
 
 	RISCV_INFO(r);
 
@@ -946,7 +946,7 @@ static int maybe_add_trigger_t1(struct target *target, struct trigger *trigger)
 	if (ret != ERROR_OK)
 		return ret;
 
-	if (riscv_reg_get(target, &tdata1, GDB_REGNO_TDATA1) != ERROR_OK)
+	if (riscv_reg_get_value(target, &tdata1, GDB_REGNO_TDATA1) != ERROR_OK)
 		return ERROR_FAIL;
 	if (tdata1 & (bpcontrol_r | bpcontrol_w | bpcontrol_x)) {
 		/* Trigger is already in use, presumably by user code. */
@@ -972,8 +972,8 @@ static int maybe_add_trigger_t1(struct target *target, struct trigger *trigger)
 }
 
 struct trigger_request_info {
-	riscv_reg_t tdata1;
-	riscv_reg_t tdata2;
+	riscv_reg_value_t tdata1;
+	riscv_reg_value_t tdata2;
 };
 
 static void log_trigger_request_info(struct trigger_request_info trig_info)
@@ -981,7 +981,7 @@ static void log_trigger_request_info(struct trigger_request_info trig_info)
 	LOG_DEBUG("tdata1=%" PRIx64 ", tdata2=%" PRIx64, trig_info.tdata1, trig_info.tdata2);
 };
 
-static struct tdata1_cache *tdata1_cache_alloc(struct list_head *tdata1_cache_head, riscv_reg_t tdata1)
+static struct tdata1_cache *tdata1_cache_alloc(struct list_head *tdata1_cache_head, riscv_reg_value_t tdata1)
 {
 	struct tdata1_cache *elem = (struct tdata1_cache *)calloc(1, sizeof(struct tdata1_cache));
 	elem->tdata1 = tdata1;
@@ -990,14 +990,14 @@ static struct tdata1_cache *tdata1_cache_alloc(struct list_head *tdata1_cache_he
 	return elem;
 }
 
-static void tdata2_cache_alloc(struct list_head *tdata2_cache_head, riscv_reg_t tdata2)
+static void tdata2_cache_alloc(struct list_head *tdata2_cache_head, riscv_reg_value_t tdata2)
 {
 	struct tdata2_cache * const elem = calloc(1, sizeof(struct tdata2_cache));
 	elem->tdata2 = tdata2;
 	list_add(&elem->elem_tdata2, tdata2_cache_head);
 }
 
-struct tdata2_cache *tdata2_cache_search(struct list_head *tdata2_cache_head, riscv_reg_t find_tdata2)
+struct tdata2_cache *tdata2_cache_search(struct list_head *tdata2_cache_head, riscv_reg_value_t find_tdata2)
 {
 	struct tdata2_cache *elem_2;
 	list_for_each_entry(elem_2, tdata2_cache_head, elem_tdata2) {
@@ -1007,7 +1007,7 @@ struct tdata2_cache *tdata2_cache_search(struct list_head *tdata2_cache_head, ri
 	return NULL;
 }
 
-struct tdata1_cache *tdata1_cache_search(struct list_head *tdata1_cache_head, riscv_reg_t find_tdata1)
+struct tdata1_cache *tdata1_cache_search(struct list_head *tdata1_cache_head, riscv_reg_value_t find_tdata1)
 {
 	struct tdata1_cache *elem_1;
 	list_for_each_entry(elem_1, tdata1_cache_head, elem_tdata1) {
@@ -1027,8 +1027,8 @@ static void create_wp_trigger_cache(struct target *target)
 		INIT_LIST_HEAD(&r->wp_triggers_negative_cache[i]);
 }
 
-static void wp_triggers_cache_add(struct target *target, unsigned int idx, riscv_reg_t tdata1,
-	riscv_reg_t tdata2, int error_code)
+static void wp_triggers_cache_add(struct target *target, unsigned int idx, riscv_reg_value_t tdata1,
+	riscv_reg_value_t tdata2, int error_code)
 {
 	RISCV_INFO(r);
 
@@ -1046,7 +1046,7 @@ static void wp_triggers_cache_add(struct target *target, unsigned int idx, riscv
 }
 
 static bool wp_triggers_cache_search(struct target *target, unsigned int idx,
-	riscv_reg_t tdata1, riscv_reg_t tdata2)
+	riscv_reg_value_t tdata1, riscv_reg_value_t tdata2)
 {
 	RISCV_INFO(r);
 
@@ -1060,8 +1060,8 @@ static bool wp_triggers_cache_search(struct target *target, unsigned int idx,
 	return true;
 }
 
-static int try_use_trigger_and_cache_result(struct target *target, unsigned int idx, riscv_reg_t tdata1,
-	riscv_reg_t tdata2)
+static int try_use_trigger_and_cache_result(struct target *target, unsigned int idx, riscv_reg_value_t tdata1,
+	riscv_reg_value_t tdata2)
 {
 	if (wp_triggers_cache_search(target, idx, tdata1, tdata2))
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
@@ -1143,22 +1143,22 @@ static int try_setup_chained_match_triggers(struct target *target,
 }
 
 struct match_triggers_tdata1_fields {
-	riscv_reg_t common;
+	riscv_reg_value_t common;
 	struct {
 		/* Other values are available for this field,
 		 * but currently only `any` is needed.
 		 */
-		riscv_reg_t any;
+		riscv_reg_value_t any;
 	} size;
 	struct {
-		riscv_reg_t enable;
-		riscv_reg_t disable;
+		riscv_reg_value_t enable;
+		riscv_reg_value_t disable;
 	} chain;
 	struct {
-		riscv_reg_t napot;
-		riscv_reg_t lt;
-		riscv_reg_t ge;
-		riscv_reg_t eq;
+		riscv_reg_value_t napot;
+		riscv_reg_value_t lt;
+		riscv_reg_value_t ge;
+		riscv_reg_value_t eq;
 	} match;
 };
 
@@ -1360,7 +1360,7 @@ static int maybe_add_trigger_t3(struct target *target, bool vs, bool vu,
 				int unique_id)
 {
 	int ret;
-	riscv_reg_t tdata1;
+	riscv_reg_value_t tdata1;
 
 	RISCV_INFO(r);
 
@@ -1388,11 +1388,11 @@ static int maybe_add_trigger_t3(struct target *target, bool vs, bool vu,
 }
 
 static int maybe_add_trigger_t4(struct target *target, bool vs, bool vu,
-				bool nmi, bool m, bool s, bool u, riscv_reg_t interrupts,
+				bool nmi, bool m, bool s, bool u, riscv_reg_value_t interrupts,
 				int unique_id)
 {
 	int ret;
-	riscv_reg_t tdata1, tdata2;
+	riscv_reg_value_t tdata1, tdata2;
 
 	RISCV_INFO(r);
 
@@ -1421,11 +1421,11 @@ static int maybe_add_trigger_t4(struct target *target, bool vs, bool vu,
 }
 
 static int maybe_add_trigger_t5(struct target *target, bool vs, bool vu,
-				bool m, bool s, bool u, riscv_reg_t exception_codes,
+				bool m, bool s, bool u, riscv_reg_value_t exception_codes,
 				int unique_id)
 {
 	int ret;
-	riscv_reg_t tdata1, tdata2;
+	riscv_reg_value_t tdata1, tdata2;
 
 	RISCV_INFO(r);
 
@@ -1455,13 +1455,13 @@ static int maybe_add_trigger_t5(struct target *target, bool vs, bool vu,
 static int add_trigger(struct target *target, struct trigger *trigger)
 {
 	int ret;
-	riscv_reg_t tselect;
+	riscv_reg_value_t tselect;
 
 	ret = riscv_enumerate_triggers(target);
 	if (ret != ERROR_OK)
 		return ret;
 
-	ret = riscv_reg_get(target, &tselect, GDB_REGNO_TSELECT);
+	ret = riscv_reg_get_value(target, &tselect, GDB_REGNO_TSELECT);
 	if (ret != ERROR_OK)
 		return ret;
 
@@ -1479,7 +1479,7 @@ static int add_trigger(struct target *target, struct trigger *trigger)
 			break;
 	} while (0);
 
-	if (riscv_reg_set(target, GDB_REGNO_TSELECT, tselect) != ERROR_OK &&
+	if (riscv_reg_set_value(target, GDB_REGNO_TSELECT, tselect) != ERROR_OK &&
 			ret == ERROR_OK)
 		return ERROR_FAIL;
 
@@ -1662,16 +1662,16 @@ static int remove_trigger(struct target *target, int unique_id)
 	if (riscv_enumerate_triggers(target) != ERROR_OK)
 		return ERROR_FAIL;
 
-	riscv_reg_t tselect;
-	int result = riscv_reg_get(target, &tselect, GDB_REGNO_TSELECT);
+	riscv_reg_value_t tselect;
+	int result = riscv_reg_get_value(target, &tselect, GDB_REGNO_TSELECT);
 	if (result != ERROR_OK)
 		return result;
 
 	bool done = false;
 	for (unsigned int i = 0; i < r->trigger_count; i++) {
 		if (r->trigger_unique_id[i] == unique_id) {
-			riscv_reg_set(target, GDB_REGNO_TSELECT, i);
-			riscv_reg_set(target, GDB_REGNO_TDATA1, 0);
+			riscv_reg_set_value(target, GDB_REGNO_TSELECT, i);
+			riscv_reg_set_value(target, GDB_REGNO_TDATA1, 0);
 			r->trigger_unique_id[i] = -1;
 			LOG_TARGET_DEBUG(target, "Stop using resource %d for bp %d",
 				i, unique_id);
@@ -1684,7 +1684,7 @@ static int remove_trigger(struct target *target, int unique_id)
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
 	}
 
-	riscv_reg_set(target, GDB_REGNO_TSELECT, tselect);
+	riscv_reg_set_value(target, GDB_REGNO_TSELECT, tselect);
 
 	return ERROR_OK;
 }
@@ -1778,7 +1778,7 @@ typedef enum {
 } mctrl6hitstatus;
 
 static mctrl6hitstatus check_mcontrol6_hit_status(struct target *target,
-		riscv_reg_t tdata1, uint64_t hit_mask)
+		riscv_reg_value_t tdata1, uint64_t hit_mask)
 {
 	const uint32_t hit0 = get_field(tdata1, CSR_MCONTROL6_HIT0);
 	const uint32_t hit1 = get_field(tdata1, CSR_MCONTROL6_HIT1);
@@ -1799,19 +1799,19 @@ static mctrl6hitstatus check_mcontrol6_hit_status(struct target *target,
 		 * To distinguish these two cases, try writing all non-zero bit
 		 * patterns to hit[1..0] to determine if the "hit" bits are supported:
 		 */
-		riscv_reg_t tdata1_tests[] = {
+		riscv_reg_value_t tdata1_tests[] = {
 			set_field(tdata1, CSR_MCONTROL6_HIT0, 1),
 			set_field(tdata1, CSR_MCONTROL6_HIT1, 1),
 			set_field(tdata1, CSR_MCONTROL6_HIT0, 1) | field_value(CSR_MCONTROL6_HIT1, 1)
 		};
-		riscv_reg_t tdata1_test_rb;
+		riscv_reg_value_t tdata1_test_rb;
 		for (uint64_t i = 0; i < ARRAY_SIZE(tdata1_tests); ++i) {
-			if (riscv_reg_set(target, GDB_REGNO_TDATA1, tdata1_tests[i]) != ERROR_OK)
+			if (riscv_reg_set_value(target, GDB_REGNO_TDATA1, tdata1_tests[i]) != ERROR_OK)
 				return M6_HIT_ERROR;
-			if (riscv_reg_get(target, &tdata1_test_rb, GDB_REGNO_TDATA1) != ERROR_OK)
+			if (riscv_reg_get_value(target, &tdata1_test_rb, GDB_REGNO_TDATA1) != ERROR_OK)
 				return M6_HIT_ERROR;
 			if (tdata1_test_rb == tdata1_tests[i]) {
-				if (riscv_reg_set(target, GDB_REGNO_TDATA1, tdata1_test_rb & ~hit_mask) != ERROR_OK)
+				if (riscv_reg_set_value(target, GDB_REGNO_TDATA1, tdata1_test_rb & ~hit_mask) != ERROR_OK)
 					return M6_HIT_ERROR;
 				return M6_NOT_HIT;
 			}
@@ -1838,8 +1838,8 @@ static int riscv_trigger_detect_hit_bits(struct target *target, int64_t *unique_
 	assert(need_single_step);
 	*need_single_step = false;
 
-	riscv_reg_t tselect;
-	if (riscv_reg_get(target, &tselect, GDB_REGNO_TSELECT) != ERROR_OK)
+	riscv_reg_value_t tselect;
+	if (riscv_reg_get_value(target, &tselect, GDB_REGNO_TSELECT) != ERROR_OK)
 		return ERROR_FAIL;
 
 	*unique_id = RISCV_TRIGGER_HIT_NOT_FOUND;
@@ -1847,11 +1847,11 @@ static int riscv_trigger_detect_hit_bits(struct target *target, int64_t *unique_
 		if (r->trigger_unique_id[i] == -1)
 			continue;
 
-		if (riscv_reg_set(target, GDB_REGNO_TSELECT, i) != ERROR_OK)
+		if (riscv_reg_set_value(target, GDB_REGNO_TSELECT, i) != ERROR_OK)
 			return ERROR_FAIL;
 
 		uint64_t tdata1;
-		if (riscv_reg_get(target, &tdata1, GDB_REGNO_TDATA1) != ERROR_OK)
+		if (riscv_reg_get_value(target, &tdata1, GDB_REGNO_TDATA1) != ERROR_OK)
 			return ERROR_FAIL;
 		int type = get_field(tdata1, CSR_TDATA1_TYPE(riscv_xlen(target)));
 
@@ -1898,7 +1898,7 @@ static int riscv_trigger_detect_hit_bits(struct target *target, int64_t *unique_
 			LOG_TARGET_DEBUG(target, "Trigger %u (unique_id=%" PRIi64
 			") has hit bit set. (need_single_step=%s)",
 				i, r->trigger_unique_id[i], (*need_single_step) ? "yes" : "no");
-			if (riscv_reg_set(target, GDB_REGNO_TDATA1, tdata1 & ~hit_mask) != ERROR_OK)
+			if (riscv_reg_set_value(target, GDB_REGNO_TDATA1, tdata1 & ~hit_mask) != ERROR_OK)
 				return ERROR_FAIL;
 
 			*unique_id = r->trigger_unique_id[i];
@@ -1906,7 +1906,7 @@ static int riscv_trigger_detect_hit_bits(struct target *target, int64_t *unique_
 		}
 	}
 
-	if (riscv_reg_set(target, GDB_REGNO_TSELECT, tselect) != ERROR_OK)
+	if (riscv_reg_set_value(target, GDB_REGNO_TSELECT, tselect) != ERROR_OK)
 		return ERROR_FAIL;
 
 	return ERROR_OK;
@@ -2367,8 +2367,8 @@ static int riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_w
 		}
 	}
 
-	riscv_reg_t dpc;
-	if (riscv_reg_get(target, &dpc, GDB_REGNO_DPC) != ERROR_OK)
+	riscv_reg_value_t dpc;
+	if (riscv_reg_get_value(target, &dpc, GDB_REGNO_DPC) != ERROR_OK)
 		return ERROR_FAIL;
 	const uint8_t length = 4;
 	LOG_TARGET_DEBUG(target, "dpc is 0x%" PRIx64, dpc);
@@ -2395,7 +2395,7 @@ static int riscv_hit_watchpoint(struct target *target, struct watchpoint **hit_w
 
 	if (get_loadstore_membase_regno(target, instruction, &rs) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_reg_get(target, &mem_addr, rs) != ERROR_OK)
+	if (riscv_reg_get_value(target, &mem_addr, rs) != ERROR_OK)
 		return ERROR_FAIL;
 	if (get_loadstore_memoffset(target, instruction, &memoffset) != ERROR_OK)
 		return ERROR_FAIL;
@@ -2527,7 +2527,7 @@ static int old_or_new_riscv_poll(struct target *target)
 }
 
 static enum target_debug_reason
-derive_debug_reason_without_hitbit(const struct target *target, riscv_reg_t dpc)
+derive_debug_reason_without_hitbit(const struct target *target, riscv_reg_value_t dpc)
 {
 	/* TODO: if we detect that etrigger/itrigger/icount is set, we should
 	 * just report DBG_REASON_UNKNOWN, since we can't disctiguish these
@@ -2602,8 +2602,8 @@ static int set_debug_reason(struct target *target, enum riscv_halt_reason halt_r
 			} else {
 				LOG_TARGET_DEBUG(target,
 					"No trigger hit found, deriving debug reason without it.");
-				riscv_reg_t dpc;
-				if (riscv_reg_get(target, &dpc, GDB_REGNO_DPC) != ERROR_OK)
+				riscv_reg_value_t dpc;
+				if (riscv_reg_get_value(target, &dpc, GDB_REGNO_DPC) != ERROR_OK)
 					return ERROR_FAIL;
 				/* Here we don't have the hit bit set (likely, HW does not support it).
 				 * We are trying to guess the state. But here comes the problem:
@@ -2833,7 +2833,7 @@ static int resume_prep(struct target *target, bool current,
 	assert(target->state == TARGET_HALTED);
 	RISCV_INFO(r);
 
-	if (!current && riscv_reg_set(target, GDB_REGNO_PC, address) != ERROR_OK)
+	if (!current && riscv_reg_set_value(target, GDB_REGNO_PC, address) != ERROR_OK)
 		return ERROR_FAIL;
 
 	if (handle_breakpoints) {
@@ -2990,15 +2990,15 @@ static int riscv_target_resume(struct target *target, bool current,
 
 static int riscv_effective_privilege_mode(struct target *target, int *v_mode, int *effective_mode)
 {
-	riscv_reg_t priv;
-	if (riscv_reg_get(target, &priv, GDB_REGNO_PRIV) != ERROR_OK) {
+	riscv_reg_value_t priv;
+	if (riscv_reg_get_value(target, &priv, GDB_REGNO_PRIV) != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Failed to read priv register.");
 		return ERROR_FAIL;
 	}
 	*v_mode = get_field(priv, VIRT_PRIV_V);
 
-	riscv_reg_t mstatus;
-	if (riscv_reg_get(target, &mstatus, GDB_REGNO_MSTATUS) != ERROR_OK) {
+	riscv_reg_value_t mstatus;
+	if (riscv_reg_get_value(target, &mstatus, GDB_REGNO_MSTATUS) != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Failed to read mstatus register.");
 		return ERROR_FAIL;
 	}
@@ -3021,8 +3021,8 @@ static int riscv_mmu(struct target *target, int *enabled)
 		return ERROR_OK;
 
 	/* Don't use MMU in explicit or effective M (machine) mode */
-	riscv_reg_t priv;
-	if (riscv_reg_get(target, &priv, GDB_REGNO_PRIV) != ERROR_OK) {
+	riscv_reg_value_t priv;
+	if (riscv_reg_get_value(target, &priv, GDB_REGNO_PRIV) != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Failed to read priv register.");
 		return ERROR_FAIL;
 	}
@@ -3037,12 +3037,13 @@ static int riscv_mmu(struct target *target, int *enabled)
 	if (v_mode) {
 		/* In VU or VS mode, MMU is considered enabled when
 		 * either hgatp or vsatp mode is not OFF */
-		riscv_reg_t vsatp;
-		if (riscv_reg_get(target, &vsatp, GDB_REGNO_VSATP) != ERROR_OK) {
+		riscv_reg_value_t vsatp;
+		if (riscv_reg_get_value(target, &vsatp, GDB_REGNO_VSATP) != ERROR_OK) {
 			LOG_TARGET_ERROR(target, "Failed to read vsatp register; priv=0x%" PRIx64,
 					priv);
 			return ERROR_FAIL;
 		}
+
 		/* vsatp is identical to satp, so we can use the satp macros. */
 		if (get_field(vsatp, RISCV_SATP_MODE(xlen)) != SATP_MODE_OFF) {
 			LOG_TARGET_DEBUG(target, "VS-stage translation is enabled.");
@@ -3050,8 +3051,8 @@ static int riscv_mmu(struct target *target, int *enabled)
 			return ERROR_OK;
 		}
 
-		riscv_reg_t hgatp;
-		if (riscv_reg_get(target, &hgatp, GDB_REGNO_HGATP) != ERROR_OK) {
+		riscv_reg_value_t hgatp;
+		if (riscv_reg_get_value(target, &hgatp, GDB_REGNO_HGATP) != ERROR_OK) {
 			LOG_TARGET_ERROR(target, "Failed to read hgatp register; priv=0x%" PRIx64,
 					priv);
 			return ERROR_FAIL;
@@ -3072,8 +3073,8 @@ static int riscv_mmu(struct target *target, int *enabled)
 		return ERROR_OK;
 	}
 
-	riscv_reg_t satp;
-	if (riscv_reg_get(target, &satp, GDB_REGNO_SATP) != ERROR_OK) {
+	riscv_reg_value_t satp;
+	if (riscv_reg_get_value(target, &satp, GDB_REGNO_SATP) != ERROR_OK) {
 		LOG_TARGET_DEBUG(target, "Couldn't read SATP.");
 		/* If we can't read SATP, then there must not be an MMU. */
 		return ERROR_OK;
@@ -3189,8 +3190,8 @@ static int riscv_address_translate(struct target *target,
 /* Virtual to physical translation for hypervisor mode. */
 static int riscv_virt2phys_v(struct target *target, target_addr_t virtual, target_addr_t *physical)
 {
-	riscv_reg_t vsatp;
-	if (riscv_reg_get(target, &vsatp, GDB_REGNO_VSATP) != ERROR_OK) {
+	riscv_reg_value_t vsatp;
+	if (riscv_reg_get_value(target, &vsatp, GDB_REGNO_VSATP) != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Failed to read vsatp register.");
 		return ERROR_FAIL;
 	}
@@ -3198,8 +3199,9 @@ static int riscv_virt2phys_v(struct target *target, target_addr_t virtual, targe
 	unsigned int xlen = riscv_xlen(target);
 	int vsatp_mode = get_field(vsatp, RISCV_SATP_MODE(xlen));
 	LOG_TARGET_DEBUG(target, "VS-stage translation mode: %d", vsatp_mode);
-	riscv_reg_t hgatp;
-	if (riscv_reg_get(target, &hgatp, GDB_REGNO_HGATP) != ERROR_OK) {
+
+	riscv_reg_value_t hgatp;
+	if (riscv_reg_get_value(target, &hgatp, GDB_REGNO_HGATP) != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Failed to read hgatp register.");
 		return ERROR_FAIL;
 	}
@@ -3308,8 +3310,8 @@ static int riscv_virt2phys(struct target *target, target_addr_t virtual, target_
 		return ERROR_OK;
 	}
 
-	riscv_reg_t priv;
-	if (riscv_reg_get(target, &priv, GDB_REGNO_PRIV) != ERROR_OK) {
+	riscv_reg_value_t priv;
+	if (riscv_reg_get_value(target, &priv, GDB_REGNO_PRIV) != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Failed to read priv register.");
 		return ERROR_FAIL;
 	}
@@ -3317,8 +3319,8 @@ static int riscv_virt2phys(struct target *target, target_addr_t virtual, target_
 	if (priv & VIRT_PRIV_V)
 		return riscv_virt2phys_v(target, virtual, physical);
 
-	riscv_reg_t satp_value;
-	if (riscv_reg_get(target, &satp_value, GDB_REGNO_SATP) != ERROR_OK) {
+	riscv_reg_value_t satp_value;
+	if (riscv_reg_get_value(target, &satp_value, GDB_REGNO_SATP) != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Failed to read SATP register.");
 		return ERROR_FAIL;
 	}
@@ -3638,7 +3640,7 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 	}
 
 	/* Disable Interrupts before attempting to run the algorithm. */
-	riscv_reg_t current_mstatus;
+	riscv_reg_value_t current_mstatus;
 	if (riscv_interrupts_disable(target, &current_mstatus) != ERROR_OK)
 		return ERROR_FAIL;
 
@@ -3669,8 +3671,8 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 			};
 			for (unsigned int i = 0; i < ARRAY_SIZE(regnums); i++) {
 				enum gdb_regno regno = regnums[i];
-				riscv_reg_t reg_value;
-				if (riscv_reg_get(target, &reg_value, regno) != ERROR_OK)
+				riscv_reg_value_t reg_value;
+				if (riscv_reg_get_value(target, &reg_value, regno) != ERROR_OK)
 					break;
 
 				LOG_TARGET_ERROR(target, "%s = 0x%" PRIx64, riscv_reg_gdb_regno_name(target, regno), reg_value);
@@ -4110,8 +4112,8 @@ int riscv_openocd_poll(struct target *target)
 		{
 			struct target *t = entry->target;
 			if (t->state == TARGET_HALTED) {
-				riscv_reg_t dcsr;
-				if (riscv_reg_get(t, &dcsr, GDB_REGNO_DCSR) != ERROR_OK)
+				riscv_reg_value_t dcsr;
+				if (riscv_reg_get_value(t, &dcsr, GDB_REGNO_DCSR) != ERROR_OK)
 					return ERROR_FAIL;
 				if (get_field(dcsr, CSR_DCSR_CAUSE) == CSR_DCSR_CAUSE_GROUP)
 					cause_groups++;
@@ -4191,7 +4193,7 @@ static int riscv_openocd_step_impl(struct target *target, bool current,
 	LOG_TARGET_DEBUG(target, "stepping hart");
 
 	if (!current) {
-		if (riscv_reg_set(target, GDB_REGNO_PC, address) != ERROR_OK)
+		if (riscv_reg_set_value(target, GDB_REGNO_PC, address) != ERROR_OK)
 			return ERROR_FAIL;
 	}
 
@@ -4199,7 +4201,7 @@ static int riscv_openocd_step_impl(struct target *target, bool current,
 	/* the front-end may request us not to handle breakpoints */
 	if (handle_breakpoints) {
 		if (current) {
-			if (riscv_reg_get(target, &address, GDB_REGNO_PC) != ERROR_OK)
+			if (riscv_reg_get_value(target, &address, GDB_REGNO_PC) != ERROR_OK)
 				return ERROR_FAIL;
 		}
 		breakpoint = breakpoint_find(target, address);
@@ -4219,7 +4221,7 @@ static int riscv_openocd_step_impl(struct target *target, bool current,
 	}
 
 	bool success = true;
-	riscv_reg_t current_mstatus;
+	riscv_reg_value_t current_mstatus;
 	RISCV_INFO(info);
 
 	if (info->isrmask_mode == RISCV_ISRMASK_STEPONLY) {
@@ -5017,7 +5019,7 @@ COMMAND_HANDLER(riscv_itrigger)
 		bool m = false;
 		bool s = false;
 		bool u = false;
-		riscv_reg_t interrupts = 0;
+		riscv_reg_value_t interrupts = 0;
 
 		for (unsigned int i = 1; i < CMD_ARGC; i++) {
 			if (!strcmp(CMD_ARGV[i], "vs"))
@@ -5146,7 +5148,7 @@ COMMAND_HANDLER(riscv_etrigger)
 		bool m = false;
 		bool s = false;
 		bool u = false;
-		riscv_reg_t exception_codes = 0;
+		riscv_reg_value_t exception_codes = 0;
 
 		for (unsigned int i = 1; i < CMD_ARGC; i++) {
 			if (!strcmp(CMD_ARGV[i], "vs"))
@@ -5517,7 +5519,7 @@ COMMAND_HANDLER(handle_reserve_trigger)
 	if (CMD_ARGC != 2)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	riscv_reg_t t;
+	riscv_reg_value_t t;
 	COMMAND_PARSE_NUMBER(u64, CMD_ARGV[0], t);
 
 	if (riscv_enumerate_triggers(target) != ERROR_OK)
@@ -5991,25 +5993,25 @@ static int riscv_resume_go_all_harts(struct target *target)
 	return ERROR_OK;
 }
 
-static int riscv_interrupts_disable(struct target *target, riscv_reg_t *old_mstatus)
+static int riscv_interrupts_disable(struct target *target, riscv_reg_value_t *old_mstatus)
 {
 	LOG_TARGET_DEBUG(target, "Disabling interrupts.");
-	riscv_reg_t current_mstatus;
-	int ret = riscv_reg_get(target, &current_mstatus, GDB_REGNO_MSTATUS);
+	riscv_reg_value_t current_mstatus;
+	int ret = riscv_reg_get_value(target, &current_mstatus, GDB_REGNO_MSTATUS);
 	if (ret != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Failed to read mstatus!");
 		return ret;
 	}
 	if (old_mstatus)
 		*old_mstatus = current_mstatus;
-	return riscv_reg_set(target, GDB_REGNO_MSTATUS, current_mstatus & ~mstatus_ie_mask);
+	return riscv_reg_set_value(target, GDB_REGNO_MSTATUS, current_mstatus & ~mstatus_ie_mask);
 }
 
-static int riscv_interrupts_restore(struct target *target, riscv_reg_t old_mstatus)
+static int riscv_interrupts_restore(struct target *target, riscv_reg_value_t old_mstatus)
 {
 	LOG_TARGET_DEBUG(target, "Restoring interrupts.");
-	riscv_reg_t current_mstatus;
-	int ret = riscv_reg_get(target, &current_mstatus, GDB_REGNO_MSTATUS);
+	riscv_reg_value_t current_mstatus;
+	int ret = riscv_reg_get_value(target, &current_mstatus, GDB_REGNO_MSTATUS);
 	if (ret != ERROR_OK) {
 		LOG_TARGET_ERROR(target, "Failed to read mstatus!");
 		return ret;
@@ -6019,7 +6021,7 @@ static int riscv_interrupts_restore(struct target *target, riscv_reg_t old_mstat
 		LOG_TARGET_WARNING(target, "OpenOCD might have affected the program when it restored the interrupt bits after single-step.");
 		LOG_TARGET_WARNING(target, "Hint: Use 'riscv set_maskisr off' to prevent OpenOCD from touching mstatus during single-step.");
 	}
-	return riscv_reg_set(target, GDB_REGNO_MSTATUS, current_mstatus | (old_mstatus & mstatus_ie_mask));
+	return riscv_reg_set_value(target, GDB_REGNO_MSTATUS, current_mstatus | (old_mstatus & mstatus_ie_mask));
 }
 
 static int riscv_step_rtos_hart(struct target *target)
@@ -6156,10 +6158,10 @@ unsigned int riscv_get_dmi_address_bits(const struct target *target)
 static int check_if_trigger_exists(struct target *target, unsigned int index)
 {
 	/* If we can't write tselect, then this hart does not support triggers. */
-	if (riscv_reg_set(target, GDB_REGNO_TSELECT, index) != ERROR_OK)
+	if (riscv_reg_set_value(target, GDB_REGNO_TSELECT, index) != ERROR_OK)
 		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
-	riscv_reg_t tselect_rb;
-	if (riscv_reg_get(target, &tselect_rb, GDB_REGNO_TSELECT) != ERROR_OK)
+	riscv_reg_value_t tselect_rb;
+	if (riscv_reg_get_value(target, &tselect_rb, GDB_REGNO_TSELECT) != ERROR_OK)
 		return ERROR_FAIL;
 	/* Mask off the top bit, which is used as tdrmode in legacy RISC-V Debug Spec
 	 * (old revisions of v0.11 spec). */
@@ -6175,11 +6177,11 @@ static int check_if_trigger_exists(struct target *target, unsigned int index)
  * It is assumed that the trigger is already selected via writing `tselect`.
  */
 static int get_trigger_types(struct target *target, unsigned int *trigger_tinfo,
-		riscv_reg_t tdata1)
+		riscv_reg_value_t tdata1)
 {
 	assert(trigger_tinfo);
-	riscv_reg_t tinfo;
-	if (riscv_reg_get(target, &tinfo, GDB_REGNO_TINFO) == ERROR_OK) {
+	riscv_reg_value_t tinfo;
+	if (riscv_reg_get_value(target, &tinfo, GDB_REGNO_TINFO) == ERROR_OK) {
 		/* tinfo.INFO == 1: trigger doesn’t exist
 		 * tinfo == 0 or tinfo.INFO != 1 and tinfo LSB is set: invalid tinfo */
 		if (tinfo == 0 || tinfo & 0x1)
@@ -6194,7 +6196,7 @@ static int get_trigger_types(struct target *target, unsigned int *trigger_tinfo,
 	return ERROR_OK;
 }
 
-static int disable_trigger_if_dmode(struct target *target, riscv_reg_t tdata1)
+static int disable_trigger_if_dmode(struct target *target, riscv_reg_value_t tdata1)
 {
 	bool dmode_is_set = false;
 	switch (get_field(tdata1, CSR_TDATA1_TYPE(riscv_xlen(target)))) {
@@ -6222,7 +6224,7 @@ static int disable_trigger_if_dmode(struct target *target, riscv_reg_t tdata1)
 	if (!dmode_is_set)
 		/* Nothing to do */
 		return ERROR_OK;
-	return riscv_reg_set(target, GDB_REGNO_TDATA1, 0);
+	return riscv_reg_set_value(target, GDB_REGNO_TDATA1, 0);
 }
 
 /**
@@ -6244,8 +6246,8 @@ int riscv_enumerate_triggers(struct target *target)
 		return ERROR_FAIL;
 	}
 
-	riscv_reg_t orig_tselect;
-	int result = riscv_reg_get(target, &orig_tselect, GDB_REGNO_TSELECT);
+	riscv_reg_value_t orig_tselect;
+	int result = riscv_reg_get_value(target, &orig_tselect, GDB_REGNO_TSELECT);
 	/* If tselect is not readable, the trigger module is likely not
 	 * implemented. */
 	if (result != ERROR_OK) {
@@ -6262,8 +6264,8 @@ int riscv_enumerate_triggers(struct target *target)
 	 * No need to enumerate per-trigger.
 	 * See https://github.com/riscv/riscv-debug-spec/pull/1081.
 	 */
-	riscv_reg_t tinfo;
-	if (riscv_reg_get(target, &tinfo, GDB_REGNO_TINFO) == ERROR_OK) {
+	riscv_reg_value_t tinfo;
+	if (riscv_reg_get_value(target, &tinfo, GDB_REGNO_TINFO) == ERROR_OK) {
 		r->tinfo_version = get_field(tinfo, CSR_TINFO_VERSION);
 		LOG_TARGET_DEBUG(target, "Trigger tinfo.version = %d.", r->tinfo_version);
 	} else {
@@ -6279,8 +6281,8 @@ int riscv_enumerate_triggers(struct target *target)
 		if (result == ERROR_TARGET_RESOURCE_NOT_AVAILABLE)
 			break;
 
-		riscv_reg_t tdata1;
-		if (riscv_reg_get(target, &tdata1, GDB_REGNO_TDATA1) != ERROR_OK)
+		riscv_reg_value_t tdata1;
+		if (riscv_reg_get_value(target, &tdata1, GDB_REGNO_TDATA1) != ERROR_OK)
 			return ERROR_FAIL;
 
 		result = get_trigger_types(target, &r->trigger_tinfo[t], tdata1);
@@ -6296,7 +6298,7 @@ int riscv_enumerate_triggers(struct target *target)
 			return ERROR_FAIL;
 	}
 
-	if (riscv_reg_set(target, GDB_REGNO_TSELECT, orig_tselect) != ERROR_OK)
+	if (riscv_reg_set_value(target, GDB_REGNO_TSELECT, orig_tselect) != ERROR_OK)
 		return ERROR_FAIL;
 
 	r->triggers_enumerated = true;

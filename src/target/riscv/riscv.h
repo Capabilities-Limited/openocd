@@ -43,9 +43,17 @@ extern struct target_type riscv013_target;
 /*
  * Definitions shared by code supporting all RISC-V versions.
  */
-typedef uint64_t riscv_reg_t;
+typedef bool riscv_cheri_tag_t;
+typedef uint64_t riscv_cheri_meta_t;
+typedef uint64_t riscv_reg_value_t;
 typedef uint32_t riscv_insn_t;
 typedef uint64_t riscv_addr_t;
+
+typedef struct {
+	riscv_cheri_tag_t tag;
+	riscv_cheri_meta_t meta;
+	riscv_reg_value_t value; /* The value of the register - plain data or address of a capability */
+} riscv_reg_t;
 
 typedef enum {
 	YNM_MAYBE,
@@ -179,7 +187,7 @@ struct riscv_info {
 	/* It's possible that each core has a different supported ISA set. */
 	int xlen;
 	/* TODO: use the value from the register cache instead. */
-	riscv_reg_t misa;
+	riscv_reg_value_t misa;
 	/* TODO: use the value from the register cache instead.
 	 * Cached value of vlenb. 0 indicates there is no vector support.
 	 * Note that you can have vector support without misa.V set, because

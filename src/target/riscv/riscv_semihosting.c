@@ -110,8 +110,8 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 	struct semihosting *semihosting = target->semihosting;
 	assert(semihosting);
 
-	riscv_reg_t pc;
-	int result = riscv_reg_get(target, &pc, GDB_REGNO_PC);
+	riscv_reg_value_t pc;
+	int result = riscv_reg_get_value(target, &pc, GDB_REGNO_PC);
 	if (result != ERROR_OK) {
 		LOG_TARGET_DEBUG(target, "Semihosting outcome: ERROR (failed to read PC)");
 		return SEMIHOSTING_ERROR;
@@ -155,17 +155,17 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 	 */
 	if (!semihosting->hit_fileio) {
 		/* RISC-V uses A0 and A1 to pass function arguments */
-		riscv_reg_t r0;
-		riscv_reg_t r1;
+		riscv_reg_value_t r0;
+		riscv_reg_value_t r1;
 
-		result = riscv_reg_get(target, &r0, GDB_REGNO_A0);
+		result = riscv_reg_get_value(target, &r0, GDB_REGNO_A0);
 		if (result != ERROR_OK) {
 			LOG_TARGET_ERROR(target, "Could not read semihosting operation code (register a0)");
 			LOG_TARGET_DEBUG(target, "Semihosting outcome: ERROR (failed to read a0)");
 			return SEMIHOSTING_ERROR;
 		}
 
-		result = riscv_reg_get(target, &r1, GDB_REGNO_A1);
+		result = riscv_reg_get_value(target, &r1, GDB_REGNO_A1);
 		if (result != ERROR_OK) {
 			LOG_TARGET_ERROR(target, "Could not read semihosting operation code (register a1)");
 			LOG_TARGET_DEBUG(target, "Semihosting outcome: ERROR (failed to read a1)");
@@ -195,7 +195,7 @@ enum semihosting_result riscv_semihosting(struct target *target, int *retval)
 	}
 
 	/* Resume right after the EBREAK 4 bytes instruction. */
-	*retval = riscv_reg_set(target, GDB_REGNO_PC, pc + 4);
+	*retval = riscv_reg_set_value(target, GDB_REGNO_PC, pc + 4);
 	if (*retval != ERROR_OK)
 		return SEMIHOSTING_ERROR;
 
@@ -236,6 +236,6 @@ static int riscv_semihosting_post_result(struct target *target)
 	assert(semihosting);
 
 	LOG_TARGET_DEBUG(target, "Result: 0x%" PRIx64, semihosting->result);
-	riscv_reg_set(target, GDB_REGNO_A0, semihosting->result);
+	riscv_reg_set_value(target, GDB_REGNO_A0, semihosting->result);
 	return 0;
 }
