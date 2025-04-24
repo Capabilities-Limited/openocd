@@ -2408,10 +2408,8 @@ static int examine_cheri_access(struct target *target)
 {
 	RISCV013_INFO(info);
 
-	/*   TODO: The Sdext implementation for Zcheripurecap will be changed likely as the CHERI extension
-	 *   specification has been ratified yet.
-	 *   The following features, which are optional in Sdext, must be implemented for use with Zcheripurecap
-	 *   in current CHERI extension specification (v0.8.3):
+	/*   The following features, which are optional in Sdext, must be implemented for use with Zcheripurecap
+	 *   in current CHERI extension specification (v0.9.0):
 	 *   - The hartinfo register must be implemented.
 	 *   - All harts which support Zcheripurecap must provide hartinfo.nscratch of at least 1 and
 	 *     implement the dscratch0c register.
@@ -2420,7 +2418,7 @@ static int examine_cheri_access(struct target *target)
 	 *   - The program buffer must be implemented, with abstractcs.progbufsize of at least 4 if
 	 *     dmstatus.impebreak is 1, or at least 5 if dmstatus.impebreak is 0.
 	 *
-	 * See https://github.com/riscv/riscv-cheri/releases/tag/v0.8.3-prerelease */
+	 * See https://github.com/riscv/riscv-cheri/releases/tag/v0.9.0-prerelease */
 
 	if (info->nscratch == 0 || info->dataaccess != 0 || info->datasize == 0 ||
 			!has_sufficient_progbuf(target, 5)) {
@@ -2431,6 +2429,40 @@ static int examine_cheri_access(struct target *target)
 			info->progbufsize, info->impebreak);
 		return ERROR_FAIL;
 	}
+
+	return ERROR_OK;
+}
+
+static int set_zcherihybird_debug_mode(struct target *target)
+{
+	/*   The dinfc must be implemented as following when using with Zcherihybrid
+	 *   in CHERI extension specification (v0.9.5):
+	 *   - The M-bit is reset to Integer Pointer Mode (1).
+	 *   - The debugger can set the M-bit to Capability Pointer Mode (0) by
+	 *     executing MODESW.CAP from the program buffer.
+	 *   - Executing MODESW.CAP causes subsequent instructions execution from
+	 *     the program buffer, starting from the next instruction, to be executed
+	 *     in Capability Pointer Mode. It also sets the CHERI execution mode to
+	 *     Capability Pointer Mode on future entry into debug mode.
+	 *   - Therefore to enable use of a CHERI debugger, a single MODESW.CAP only
+	 *     needs to be executed once from the program buffer after resetting the core.
+	 *   - The debugger can also execute MODESW.INT to change the mode back to Integer
+	 *     Pointer Mode, which also affects the execution of the next instruction in
+	 *     the program buffer, updates the M-bit of dinfc and controls which CHERI
+	 *     execution mode to enter on the next entry into debug mode.
+	 *   - The M-bit of dinfc is only updated by executing MODESW.CAP or MODESW.INT
+	 *     from the program buffer.
+	 *
+	 * See https://github.com/riscv/riscv-cheri/releases/tag/v0.9.5 */
+	struct riscv_program program;
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, modesw_cap()) != ERROR_OK)
+		return ERROR_FAIL;
+
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return ERROR_FAIL;
+
+	LOG_TARGET_DEBUG(target, "Debug mode has been switched to CHERI capability pointer mode on Zcherihybrid");
 
 	return ERROR_OK;
 }
@@ -2585,6 +2617,9 @@ static int examine(struct target *target)
 		return result;
 
 	if (riscv_supports_zcheripurecap(target) && examine_cheri_access(target) != ERROR_OK)
+		return ERROR_FAIL;
+
+	if (riscv_supports_zcherihybrid(target) && set_zcherihybird_debug_mode(target) != ERROR_OK)
 		return ERROR_FAIL;
 
 	if (set_dcsr_ebreak(target, false) != ERROR_OK)
@@ -3410,6 +3445,7 @@ static bool dcsr_ebreak_config_equals_reset_value(const struct target *target)
 static int deassert_reset(struct target *target)
 {
 	RISCV013_INFO(info);
+
 	dm013_info_t *dm = get_dm(target);
 	if (!dm)
 		return ERROR_FAIL;
@@ -3474,6 +3510,34 @@ static int deassert_reset(struct target *target)
 	result = dm_write(target, DM_DMCONTROL, control);
 	if (result != ERROR_OK)
 		return result;
+
+	/* Set CHERI debugger to Capability Pointer Mode after reset */
+	if (riscv_supports_zcherihybrid(target)) {
+		RISCV_INFO(r);
+		if (!target->reset_halt) {
+			r->prepped = true;
+			if (riscv013_halt_go(target) != ERROR_OK) {
+				LOG_TARGET_ERROR(target, "Fatal: Hart %d failed to halt for changing CHERI debugger mode",
+						info->index);
+				return ERROR_FAIL;
+			}
+		}
+
+		target->state = TARGET_HALTED;
+		target->debug_reason = DBG_REASON_UNDEFINED;
+		if (set_zcherihybird_debug_mode(target) != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Could not change CHERI debugger to Capability Pointer Mode.");
+			return ERROR_FAIL;
+		}
+
+		if (!target->reset_halt) {
+			if (riscv013_step_or_resume_current_hart(target, false)  != ERROR_OK) {
+				LOG_TARGET_ERROR(target, "Fatal: Hart %d failed to resume after changing CHERI debugger mode",
+					info->index);
+			return ERROR_FAIL;
+			}
+		}
+	}
 
 	if (target->reset_halt) {
 		target->state = TARGET_HALTED;
