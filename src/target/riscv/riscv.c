@@ -3997,6 +3997,7 @@ static int riscv_checksum_memory(struct target *target,
 		uint32_t *checksum)
 {
 	struct working_area *crc_algorithm;
+	struct riscv_algorithm riscv_info;
 	struct reg_param reg_params[2];
 	int retval;
 
@@ -4008,17 +4009,32 @@ static int riscv_checksum_memory(struct target *target,
 	static const uint8_t riscv64_crc_code[] = {
 #include "../../../contrib/loaders/checksum/riscv64_crc.inc"
 	};
-
+	static const uint8_t riscv32_cheri_crc_code[] = {
+#include "../../../contrib/loaders/checksum/riscv32_cheri_crc.inc"
+	};
+	static const uint8_t riscv64_cheri_crc_code[] = {
+#include "../../../contrib/loaders/checksum/riscv64_cheri_crc.inc"
+	};
 	static const uint8_t *crc_code;
 
 	unsigned int xlen = riscv_xlen(target);
 	unsigned int crc_code_size;
-	if (xlen == 32) {
-		crc_code = riscv32_crc_code;
-		crc_code_size = sizeof(riscv32_crc_code);
+	if (riscv_supports_zcheripurecap_only(target)) {
+		if (xlen == 32) {
+			crc_code = riscv32_cheri_crc_code;
+			crc_code_size = sizeof(riscv32_cheri_crc_code);
+		} else {
+			crc_code = riscv64_cheri_crc_code;
+			crc_code_size = sizeof(riscv64_cheri_crc_code);
+		}
 	} else {
-		crc_code = riscv64_crc_code;
-		crc_code_size = sizeof(riscv64_crc_code);
+		if (xlen == 32) {
+			crc_code = riscv32_crc_code;
+			crc_code_size = sizeof(riscv32_crc_code);
+		} else {
+			crc_code = riscv64_crc_code;
+			crc_code_size = sizeof(riscv64_crc_code);
+		}
 	}
 
 	if (count < crc_code_size * 4) {
@@ -4050,10 +4066,31 @@ static int riscv_checksum_memory(struct target *target,
 		return retval;
 	}
 
-	init_reg_param(&reg_params[0], "a0", xlen, PARAM_IN_OUT);
-	init_reg_param(&reg_params[1], "a1", xlen, PARAM_OUT);
-	buf_set_u64(reg_params[0].value, 0, xlen, address);
-	buf_set_u64(reg_params[1].value, 0, xlen, count);
+	if (riscv_supports_zcheripurecap_only(target)) {
+		unsigned int clen = riscv_clen(target);
+		init_reg_param(&reg_params[0], "ca0", clen + 1, PARAM_IN_OUT);
+		init_reg_param(&reg_params[1], "a1", xlen, PARAM_OUT);
+
+		riscv_reg_t data_pointer = {0};
+		retval = riscv_get_cheri_infinite_capability(target, &data_pointer);
+		if (retval != ERROR_OK) {
+			LOG_TARGET_ERROR(target, "Failed to get infinite capability");
+			target_free_working_area(target, crc_algorithm);
+			return retval;
+		}
+
+		data_pointer.value = address;
+		buf_set_cheri_capability(reg_params[0].value, data_pointer, clen);
+		buf_set_u64(reg_params[1].value, 0, xlen, count);
+	} else {
+		init_reg_param(&reg_params[0], "a0", xlen, PARAM_IN_OUT);
+		init_reg_param(&reg_params[1], "a1", xlen, PARAM_OUT);
+		buf_set_u64(reg_params[0].value, 0, xlen, address);
+		buf_set_u64(reg_params[1].value, 0, xlen, count);
+	}
+
+	if (riscv_supports_zcherihybrid(target))
+		riscv_info.zcherihybrid_mode = RISCV_CHERI_INTEGER_MODE;
 
 	/* 20 second timeout/megabyte */
 	unsigned int timeout = 20000 * (1 + (count / (1024 * 1024)));
@@ -4061,10 +4098,12 @@ static int riscv_checksum_memory(struct target *target,
 	retval = target_run_algorithm(target, 0, NULL, 2, reg_params,
 			crc_algorithm->address,
 			0,	/* Leave exit point unspecified because we don't know. */
-			timeout, NULL);
+			timeout, &riscv_info);
 
 	if (retval == ERROR_OK)
-		*checksum = buf_get_u32(reg_params[0].value, 0, 32);
+		*checksum = riscv_supports_zcheripurecap_only(target) ?
+				buf_get_cheri_capability_value(reg_params[0].value, riscv_clen(target)) :
+				buf_get_u32(reg_params[0].value, 0, 32);
 	else
 		LOG_TARGET_ERROR(target, "Error executing RISC-V CRC algorithm.");
 

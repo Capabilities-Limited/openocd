@@ -14,11 +14,16 @@ RISCV_OBJCOPY ?= $(RISCV_CROSS_COMPILE)objcopy
 RISCV32_CFLAGS = -march=rv32e -mabi=ilp32e -nostdlib -nostartfiles -Os -fPIC
 RISCV64_CFLAGS = -march=rv64i -mabi=lp64 -nostdlib -nostartfiles -Os -fPIC
 
-all:	arm riscv
+RISCV32_CHERI_CFLAGS = -march=rv32izcheripurecap -mabi=il32pc64 -nostdlib -Os -fPIC -mllvm -no-cap-table-relocs
+RISCV64_CHERI_CFLAGS = -march=rv64izcheripurecap -mabi=l64pc128 -nostdlib -Os -fPIC -mllvm -no-cap-table-relocs
+
+all:	arm riscv riscv-cheri
 
 arm: armv4_5_crc.inc armv7m_crc.inc
 
 riscv:	riscv32_crc.inc riscv64_crc.inc
+
+riscv-cheri:	riscv32_cheri_crc.inc riscv64_cheri_crc.inc
 
 armv4_5_%.elf: armv4_5_%.s
 	$(ARM_AS) $(ARM_AFLAGS) $< -o $@
@@ -40,6 +45,12 @@ riscv32_%.elf:	riscv_%.c
 
 riscv64_%.elf:	riscv_%.c
 	$(RISCV_CC) $(RISCV64_CFLAGS) $< -o $@
+
+riscv32_cheri_%.elf:	riscv_%.c
+	$(RISCV_CC) $(RISCV32_CHERI_CFLAGS) $< -o $@
+
+riscv64_cheri_%.elf:	riscv_%.c
+	$(RISCV_CC) $(RISCV64_CHERI_CFLAGS) $< -o $@
 
 riscv%.bin:	riscv%.elf
 	$(RISCV_OBJCOPY) -Obinary $< $@
