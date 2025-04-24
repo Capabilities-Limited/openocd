@@ -25,6 +25,7 @@
 #include "helper/time_support.h"
 #include "helper/list.h"
 #include "riscv.h"
+#include "riscv_cheri.h"
 #include "riscv-013.h"
 #include "riscv_reg.h"
 #include "riscv-013_reg.h"
@@ -942,6 +943,9 @@ static int register_read_abstract_with_size(struct target *target,
 	/* The spec doesn't define abstract register numbers for vector registers. */
 	if (number >= GDB_REGNO_V0 && number <= GDB_REGNO_V31)
 		return ERROR_FAIL;
+	/* The spec doesn't support abstract register access for cheri registers. */
+	if (riscv_reg_gdb_regno_is_cheri_reg(target, number))
+		return ERROR_FAIL;
 
 	uint32_t command = riscv013_access_register_command(target, number, size,
 			AC_ACCESS_REGISTER_TRANSFER);
@@ -972,6 +976,10 @@ static int register_write_abstract(struct target *target, enum gdb_regno number,
 {
 	dm013_info_t *dm = get_dm(target);
 	if (!dm)
+		return ERROR_FAIL;
+
+	/* The spec doesn't support abstract register access for cheri registers. */
+	if (riscv_reg_gdb_regno_is_cheri_reg(target, number))
 		return ERROR_FAIL;
 
 	const unsigned int size_bits = register_size(target, number);
@@ -1436,6 +1444,56 @@ static int csr_read_progbuf(struct target *target, uint64_t *value,
 	return register_read_abstract(target, value, GDB_REGNO_S0) != ERROR_OK;
 }
 
+static int cheri_gpr_read_progbuf(struct target *target, riscv_reg_t *value,
+		enum gdb_regno number)
+{
+	assert(target->state == TARGET_HALTED);
+	assert(number >= GDB_REGNO_CNULL && number <= GDB_REGNO_C31);
+
+	RISCV013_INFO(info);
+
+	/* Read value */
+	const unsigned int csreg = number - GDB_REGNO_CNULL;
+	const unsigned int treg0 = (csreg == S0) ? S1 : S0;
+	if (register_read_abstract(target, &value->value, csreg) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Read meta */
+	struct riscv_program program;
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, gchi(treg0, csreg)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrw(treg0, info->dataaddr)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return ERROR_FAIL;
+	if (read_abstract_arg(target, &value->meta, 0, riscv_xlen(target)) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Read tag */
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, gctag(treg0, csreg)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrw(treg0, info->dataaddr)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return ERROR_FAIL;
+	riscv_reg_value_t tag;
+	if (read_abstract_arg(target, &tag, 0, riscv_xlen(target)) != ERROR_OK)
+		return ERROR_FAIL;
+	value->tag = tag;
+
+	return ERROR_OK;
+}
+
 /**
  * This function reads a register by writing a program to program buffer and
  * executing it.
@@ -1449,6 +1507,8 @@ static int register_read_progbuf(struct target *target, riscv_reg_t *value,
 		return fpr_read_progbuf(target, &value->value, number);
 	else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095)
 		return csr_read_progbuf(target, &value->value, number);
+	else if (riscv_reg_gdb_regno_is_cheri_gpr(number))
+		return cheri_gpr_read_progbuf(target, value, number);
 
 	LOG_TARGET_ERROR(target, "Unexpected read of %s via program buffer.",
 			riscv_reg_gdb_regno_name(target, number));
@@ -1578,6 +1638,114 @@ static int csr_write_progbuf(struct target *target, enum gdb_regno number,
 	return riscv_program_exec(&program, target);
 }
 
+static int cheri_gpr_write_progbuf(struct target *target, enum gdb_regno number,
+		riscv_reg_t value)
+{
+	assert(target->state == TARGET_HALTED);
+	assert(number >= GDB_REGNO_CNULL && number <= GDB_REGNO_C31);
+
+	RISCV013_INFO(info);
+
+	const unsigned int cdreg = number - GDB_REGNO_CNULL;
+	const unsigned int treg0 = (cdreg == S0) ? S1 : S0;
+
+	/* Write value */
+	if (register_write_abstract(target, cdreg, value.value) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Mask out the CT-bit and M-bit from the meta if a valid tag needs to be restored as
+	 * cbld is used to restore the tag bit from dinfc. However, cbld will clear the tag if
+	 * cs2 (restored capability) has CT-bit and M-bit. The CT-bit and M-bit will then
+	 * restored by scmode and sentry instructions. */
+	bool ct_bit_valid = false;
+	bool m_bit_valid = false;
+	if (value.tag) {
+		/* Handle CT-bit  */
+		riscv_cheri_meta_t ct_bit_mask = (riscv_clen(target) == 128) ? CLEN_128_CAP_CT : CLEN_64_CAP_CT;
+		ct_bit_valid = value.meta & ct_bit_mask;
+		if (ct_bit_valid)
+			value.meta &= ~ct_bit_mask;
+
+		/* Handle M-bit if target supports zcherihybrid as the M-bit of dinfc may be zero and it may cause
+		 * cbld clear the tag
+		 * TODO: Special M-bit handling as the tag is cleared by cbld if M-bit is 1 in cs2 but M-bit is
+		 * 0 in cs1 on the testing platform. This handling may be removed in future if cbld tag clear
+		 * is clarified as the tag clearing for this specific case is not mentioned in CHERI extension
+		 * specification */
+		if (riscv_supports_zcherihybrid(target)) {
+			if (riscv_clen(target) == 128) {
+				m_bit_valid = value.meta & CLEN_128_CAP_M;
+				if (m_bit_valid)
+					value.meta &= ~CLEN_128_CAP_M;
+			} else { /* CLEN == 64 */
+				m_bit_valid =
+					((value.meta & CLEN_64_CAP_AP_M_QUADRANT_MASK) == CLEN_64_CAP_AP_M_QUADRANT_EXE_CAP) &&
+					((value.meta & CLEN_64_CAP_AP_M_BIT0));
+				if (m_bit_valid)
+					value.meta &= ~CLEN_64_CAP_AP_M_BIT0;
+			}
+		}
+	}
+
+	/* Write meta */
+	if (write_abstract_arg(target, 0, value.meta, riscv_xlen(target)) != ERROR_OK)
+		return ERROR_FAIL;
+
+	struct riscv_program program;
+	riscv_program_init(&program, target);
+	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrr(treg0, info->dataaddr)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, schi(cdreg, cdreg, treg0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+		return ERROR_FAIL;
+	if (riscv_program_exec(&program, target) != ERROR_OK)
+		return ERROR_FAIL;
+
+	/* Write tag and restore CT-bit and M-bit */
+	if (value.tag) {
+		riscv_program_init(&program, target);
+		if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+			return ERROR_FAIL;
+		if (riscv_program_insert(&program, csrr(treg0, CSR_DINFC)) != ERROR_OK)
+			return ERROR_FAIL;
+		if (riscv_program_insert(&program, cbld(cdreg, treg0, cdreg)) != ERROR_OK)
+			return ERROR_FAIL;
+		if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+			return ERROR_FAIL;
+		if (riscv_program_exec(&program, target) != ERROR_OK)
+			return ERROR_FAIL;
+
+		/* Set M-bit if it's valid */
+		if (m_bit_valid) {
+			riscv_program_init(&program, target);
+			if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_insert(&program, addi(treg0, 0, 1)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_insert(&program, scmode(cdreg, cdreg, treg0)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_exec(&program, target) != ERROR_OK)
+				return ERROR_FAIL;
+		}
+
+		/* Set CT-bit if it's valid */
+		if (ct_bit_valid) {
+			riscv_program_init(&program, target);
+			if (riscv_program_insert(&program, sentry(cdreg, cdreg)) != ERROR_OK)
+				return ERROR_FAIL;
+			if (riscv_program_exec(&program, target) != ERROR_OK)
+				return ERROR_FAIL;
+		}
+	}
+
+	return ERROR_OK;
+}
+
 /**
  * This function writes a register by writing a program to program buffer and
  * executing it.
@@ -1595,6 +1763,8 @@ static int register_write_progbuf(struct target *target, enum gdb_regno number,
 		return vl_write_progbuf(target, value.value);
 	else if (number >= GDB_REGNO_CSR0 && number <= GDB_REGNO_CSR4095)
 		return csr_write_progbuf(target, number, value.value);
+	else if (riscv_reg_gdb_regno_is_cheri_gpr(number))
+		return cheri_gpr_write_progbuf(target, number, value);
 
 	LOG_TARGET_ERROR(target, "Unexpected write to %s via program buffer.",
 			riscv_reg_gdb_regno_name(target, number));
@@ -1608,8 +1778,13 @@ static int register_write_progbuf(struct target *target, enum gdb_regno number,
 static int register_write_direct(struct target *target, enum gdb_regno number,
 		riscv_reg_t value)
 {
-	LOG_TARGET_DEBUG(target, "Writing 0x%" PRIx64 " to %s", value.value,
-			riscv_reg_gdb_regno_name(target, number));
+	if (riscv_reg_gdb_regno_is_cheri_reg(target, number))
+		LOG_TARGET_DEBUG(target, "Writing 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s) to %s",
+				value.value, value.meta, value.tag ? "valid" : "invalid",
+				riscv_reg_gdb_regno_name(target, number));
+	else
+		LOG_TARGET_DEBUG(target, "Writing 0x%" PRIx64 " to %s", value.value,
+				riscv_reg_gdb_regno_name(target, number));
 
 	if (target->state != TARGET_HALTED)
 		return register_write_abstract(target, number, value.value);
@@ -1626,9 +1801,15 @@ static int register_write_direct(struct target *target, enum gdb_regno number,
 	if (cleanup_after_register_access(target, mstatus, number) != ERROR_OK)
 		return ERROR_FAIL;
 
-	if (result == ERROR_OK)
-		LOG_TARGET_DEBUG(target, "%s <- 0x%" PRIx64, riscv_reg_gdb_regno_name(target, number),
-				value.value);
+	if (result == ERROR_OK) {
+		if (riscv_reg_gdb_regno_is_cheri_reg(target, number))
+			LOG_TARGET_DEBUG(target, "%s <- 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s)",
+					riscv_reg_gdb_regno_name(target, number), value.value, value.meta,
+					value.tag ? "valid" : "invalid");
+		else
+			LOG_TARGET_DEBUG(target, "%s <- 0x%" PRIx64, riscv_reg_gdb_regno_name(target, number),
+					value.value);
+	}
 
 	return result;
 }
@@ -1661,9 +1842,15 @@ static int register_read_direct(struct target *target, riscv_reg_t *value,
 	if (cleanup_after_register_access(target, mstatus, number) != ERROR_OK)
 		return ERROR_FAIL;
 
-	if (result == ERROR_OK)
-		LOG_TARGET_DEBUG(target, "%s = 0x%" PRIx64, riscv_reg_gdb_regno_name(target, number),
-				value->value);
+	if (result == ERROR_OK) {
+		if (riscv_reg_gdb_regno_is_cheri_reg(target, number))
+			LOG_TARGET_DEBUG(target, "%s = 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s)",
+					riscv_reg_gdb_regno_name(target, number), value->value,
+					value->meta, value->tag ? "valid" : "invalid");
+		else
+			LOG_TARGET_DEBUG(target, "%s = 0x%" PRIx64, riscv_reg_gdb_regno_name(target, number),
+					value->value);
+	}
 
 	return result;
 }
@@ -5182,12 +5369,6 @@ int riscv013_get_register(struct target *target,
 		return ERROR_OK;
 	}
 
-	/* TODO: Access the capability registers from machine. Temporarily use the general
-	 * purpose registers to form the capability until it's fixed.
-	 */
-	if (rid >= GDB_REGNO_C0 && rid <= GDB_REGNO_C31)
-		rid -= GDB_REGNO_C0;
-
 	LOG_TARGET_DEBUG(target, "reading register %s",	riscv_reg_gdb_regno_name(target, rid));
 
 	if (dm013_select_target(target) != ERROR_OK)
@@ -5209,11 +5390,6 @@ int riscv013_set_register(struct target *target, enum gdb_regno rid,
 		return ERROR_OK;
 	}
 
-	/* TODO: Access the capability registers from machine. Temporarily use the general
-	 * purpose registers to form the capability until it's fixed.
-	 */
-	if (rid >= GDB_REGNO_C0 && rid <= GDB_REGNO_C31)
-		rid -= GDB_REGNO_C0;
 
 	LOG_TARGET_DEBUG(target, "writing 0x%" PRIx64 " to register %s",
 			value.value, riscv_reg_gdb_regno_name(target, rid));

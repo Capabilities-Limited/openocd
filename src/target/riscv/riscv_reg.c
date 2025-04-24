@@ -459,6 +459,43 @@ uint32_t gdb_regno_size(const struct target *target, uint32_t regno)
 	return riscv_xlen(target);
 }
 
+bool riscv_reg_gdb_regno_is_cheri_gpr(enum gdb_regno regno)
+{
+	return regno >= GDB_REGNO_C0 && regno <= GDB_REGNO_C31;
+}
+
+bool riscv_reg_gdb_regno_is_cheri_csr(const struct target *target, enum gdb_regno regno)
+{
+	switch (regno - GDB_REGNO_CSR0) {
+		case CSR_DDC:
+		case CSR_DDDC:
+		case CSR_DINFC:
+			/* These CSRs are CHERI-only and always contain a whole capability. */
+			return true;
+		case CSR_DPC:
+		case CSR_DSCRATCH0:
+		case CSR_DSCRATCH1:
+		case CSR_MTVEC:
+		case CSR_MSCRATCH:
+		case CSR_MEPC:
+		case CSR_STVEC:
+		case CSR_SSCRATCH:
+		case CSR_SEPC:
+		case CSR_JVT:
+			/* These CSRs contain a whole capability if and only if CHERI is available. */
+			return riscv_supports_zcheripurecap(target);
+		default:
+			return false;
+	}
+}
+
+bool riscv_reg_gdb_regno_is_cheri_reg(const struct target *target, enum gdb_regno regno)
+{
+	return (regno == GDB_REGNO_PCC || regno == GDB_REGNO_DDC ||
+				riscv_reg_gdb_regno_is_cheri_gpr(regno) ||
+				riscv_reg_gdb_regno_is_cheri_csr(target, regno));
+}
+
 static bool vlenb_exists(const struct target *target)
 {
 	return riscv_vlenb(target) != 0;
@@ -915,7 +952,22 @@ int riscv_reg_flush_all(struct target *target)
 	 * registers in reverse order, so that GPRs are flushed last.
 	 */
 	for (unsigned int number = target->reg_cache->num_regs; number-- > 0; ) {
-		struct reg *reg = riscv_reg_impl_cache_entry(target, number);
+		/* In non-CHERI targets:
+		 * - GPRs (x0-x31) are flushed as last.
+		 *
+		 * In CHERI targets:
+		 * - Lower parts of GPRs (x0-x31) are not flushed as separate items.
+		 * - Instead, the whole GPRs (c0-c31) are flushed, and as last.
+		 */
+
+		if (riscv_supports_zcheripurecap(target) &&
+			number >= GDB_REGNO_C0 && number <= GDB_REGNO_C31)
+			continue;
+		unsigned int flush_number =
+			(riscv_supports_zcheripurecap(target) && number <= GDB_REGNO_XPR31) ?
+			flush_number = GDB_REGNO_C0 + number : number;
+
+		struct reg *reg = riscv_reg_impl_cache_entry(target, flush_number);
 		if (reg->valid && reg->dirty) {
 			riscv_reg_t value = {0};
 			if (register_is_cheri_reg(reg))
@@ -923,9 +975,14 @@ int riscv_reg_flush_all(struct target *target)
 			else
 				value.value = buf_get_u64(reg->value, 0, reg->size);
 
-			LOG_TARGET_DEBUG(target, "%s is dirty; write back 0x%" PRIx64,
-					reg->name, value.value);
-			if (riscv_reg_write(target, number, value) != ERROR_OK)
+			if (register_is_cheri_reg(reg))
+				LOG_TARGET_DEBUG(target, "%s is dirty; write back 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s)",
+						reg->name, value.value, value.meta, value.tag ? "valid" : "invalid");
+			else
+				LOG_TARGET_DEBUG(target, "%s is dirty; write back 0x%" PRIx64,
+						reg->name, value.value);
+
+			if (riscv_reg_write(target, flush_number, value) != ERROR_OK)
 				return ERROR_FAIL;
 		}
 	}
@@ -950,6 +1007,10 @@ static int riscv_set_or_write_register(struct target *target,
 {
 	RISCV_INFO(r);
 	assert(r);
+
+	if (!riscv_reg_gdb_regno_is_cheri_reg(target, regid))
+		assert(value.meta == 0 && value.tag == 0);
+
 	if (r->dtm_version == DTM_DTMCS_VERSION_0_11)
 		return riscv011_set_register(target, regid, value.value);
 
@@ -973,6 +1034,15 @@ static int riscv_set_or_write_register(struct target *target,
 		return riscv_set_or_write_register(target, GDB_REGNO_DPC, value, write_through);
 	} else if (regid == GDB_REGNO_DDC) {
 		return riscv_set_or_write_register(target, GDB_REGNO_DDDC, value, write_through);
+	} else if (riscv_supports_zcheripurecap(target) && regid <= GDB_REGNO_XPR31) {
+		enum gdb_regno cregid = regid + GDB_REGNO_C0;
+		riscv_reg_t old_value = {0};
+
+		if (riscv_reg_get(target, &old_value, cregid) != ERROR_OK)
+			return ERROR_FAIL;
+		value.tag = 0;
+		value.meta = old_value.meta;
+		return riscv_set_or_write_register(target, cregid, value, write_through);
 	} else if (regid == GDB_REGNO_PRIV) {
 		riscv_reg_t dcsr = {0};
 
@@ -992,9 +1062,14 @@ static int riscv_set_or_write_register(struct target *target,
 	}
 
 	if (target->state != TARGET_HALTED) {
-		LOG_TARGET_DEBUG(target,
-				"Target not halted, writing to target: %s <- 0x%" PRIx64,
-				reg->name, value.value);
+		if (register_is_cheri_reg(reg))
+			LOG_TARGET_DEBUG(target,
+				"Target not halted, writing to target: %s <- 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s)",
+				reg->name, value.value, value.meta, value.tag ? "valid" : "invalid");
+		else
+			LOG_TARGET_DEBUG(target,
+				"Target not halted, writing to target: %s <- 0x%" PRIx64, reg->name, value.value);
+
 		return riscv013_set_register(target, regid, value);
 	}
 
@@ -1005,15 +1080,25 @@ static int riscv_set_or_write_register(struct target *target,
 		reg_value.value = buf_get_u64(reg->value, 0, reg->size);
 
 	const bool need_to_write = !reg->valid || reg->dirty ||
-		value.value != reg_value.value;
+		value.value != reg_value.value || value.meta != reg_value.meta ||
+		value.tag != reg_value.tag;
 	const bool cacheable = riscv_reg_impl_gdb_regno_cacheable(regid, need_to_write);
 
 	if (!cacheable || (write_through && need_to_write)) {
-		LOG_TARGET_DEBUG(target,
-				"Writing to target: %s <- 0x%" PRIx64 " (cacheable=%s, valid=%s, dirty=%s)",
-				reg->name, value.value, cacheable ? "true" : "false",
-				reg->valid ? "true" : "false",
-				reg->dirty ? "true" : "false");
+		if (register_is_cheri_reg(reg))
+			LOG_TARGET_DEBUG(target,
+					"Writing to target: %s <- 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s)"
+					" (cacheable=%s, valid=%s, dirty=%s)", reg->name, value.value,
+					value.meta,	value.tag ? "valid" : "invalid",
+					cacheable ? "true" : "false",
+					reg->valid ? "true" : "false",
+					reg->dirty ? "true" : "false");
+		else
+			LOG_TARGET_DEBUG(target,
+					"Writing to target: %s <- 0x%" PRIx64 " (cacheable=%s, valid=%s, dirty=%s)",
+					reg->name, value.value,	cacheable ? "true" : "false",
+					reg->valid ? "true" : "false",
+					reg->dirty ? "true" : "false");
 		if (riscv013_set_register(target, regid, value) != ERROR_OK)
 			return ERROR_FAIL;
 
@@ -1021,15 +1106,27 @@ static int riscv_set_or_write_register(struct target *target,
 	} else {
 		reg->dirty = need_to_write;
 	}
+	if (register_is_cheri_reg(reg))
+		buf_set_cheri_capability(reg->value, value, riscv_clen(target));
+	else
+		buf_set_u64(reg->value, 0, reg->size, value.value);
 
-	buf_set_u64(reg->value, 0, reg->size, value.value);
 	reg->valid = cacheable;
 
-	LOG_TARGET_DEBUG(target,
-			"Wrote 0x%" PRIx64 " to %s (cacheable=%s, valid=%s, dirty=%s)",
-			value.value, reg->name, cacheable ? "true" : "false",
-			reg->valid ? "true" : "false",
-			reg->dirty ? "true" : "false");
+	if (register_is_cheri_reg(reg))
+		LOG_TARGET_DEBUG(target,
+				"Wrote 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s) to %s "
+				"(cacheable=%s, valid=%s, dirty=%s)", value.value, value.meta,
+				value.tag ? "valid" : "invalid", reg->name,
+				cacheable ? "true" : "false",
+				reg->valid ? "true" : "false",
+				reg->dirty ? "true" : "false");
+	else
+		LOG_TARGET_DEBUG(target,
+				"Wrote 0x%" PRIx64 " to %s (cacheable=%s, valid=%s, dirty=%s)",
+				value.value, reg->name,	cacheable ? "true" : "false",
+				reg->valid ? "true" : "false",
+				reg->dirty ? "true" : "false");
 	return ERROR_OK;
 }
 
@@ -1131,6 +1228,8 @@ int riscv_reg_get(struct target *target, riscv_reg_t *value,
 		return riscv_reg_get(target, value, GDB_REGNO_DPC);
 	if (regid == GDB_REGNO_DDC)
 		return riscv_reg_get(target, value, GDB_REGNO_DDDC);
+	if (riscv_supports_zcheripurecap(target) && regid <= GDB_REGNO_XPR31)
+		return riscv_reg_get(target, value, regid + GDB_REGNO_C0);
 
 	struct reg *reg = riscv_reg_impl_cache_entry(target, regid);
 	assert(riscv_reg_impl_is_initialized(reg));
@@ -1145,8 +1244,12 @@ int riscv_reg_get(struct target *target, riscv_reg_t *value,
 		else
 			value->value = buf_get_u64(reg->value, 0, reg->size);
 
-		LOG_TARGET_DEBUG(target, "Read %s: 0x%" PRIx64 " (cached)", reg->name,
-				value->value);
+		if (register_is_cheri_reg(reg))
+			LOG_TARGET_DEBUG(target, "Read %s: 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s) (cached)", reg->name,
+					value->value, value->meta, value->tag ? "valid" : "invalid");
+		else
+			LOG_TARGET_DEBUG(target, "Read %s: 0x%" PRIx64 " (cached)", reg->name,
+					value->value);
 		return ERROR_OK;
 	}
 
@@ -1163,7 +1266,12 @@ int riscv_reg_get(struct target *target, riscv_reg_t *value,
 		target->state == TARGET_HALTED;
 	reg->dirty = false;
 
-	LOG_TARGET_DEBUG(target, "Read %s: 0x%" PRIx64, reg->name, value->value);
+	if (register_is_cheri_reg(reg))
+		LOG_TARGET_DEBUG(target, "Read %s: 0x%" PRIx64 " (m:0x%" PRIx64 " t:%s)", reg->name,
+					value->value, value->meta, value->tag ? "valid" : "invalid");
+	else
+		LOG_TARGET_DEBUG(target, "Read %s: 0x%" PRIx64, reg->name, value->value);
+
 	return ERROR_OK;
 }
 

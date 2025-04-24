@@ -182,13 +182,14 @@ void riscv_reg_impl_hide_csrs(const struct target *target);
 static inline bool riscv_reg_impl_gdb_regno_cacheable(enum gdb_regno regno,
 		bool is_write)
 {
-	if (regno == GDB_REGNO_ZERO)
+	if (regno == GDB_REGNO_ZERO || regno == GDB_REGNO_CNULL)
 		return !is_write;
 
-	/* GPRs, FPRs, vector registers are just normal data stores. */
+	/* GPRs, FPRs, vector registers, CHERI GPRs are just normal data stores. */
 	if (regno <= GDB_REGNO_XPR31 ||
 			(regno >= GDB_REGNO_FPR0 && regno <= GDB_REGNO_FPR31) ||
-			(regno >= GDB_REGNO_V0 && regno <= GDB_REGNO_V31))
+			(regno >= GDB_REGNO_V0 && regno <= GDB_REGNO_V31) ||
+			(regno >= GDB_REGNO_C0 && regno <= GDB_REGNO_C31))
 		return true;
 
 	/* Most CSRs won't change value on us, but we can't assume it about arbitrary
@@ -203,7 +204,7 @@ static inline bool riscv_reg_impl_gdb_regno_cacheable(enum gdb_regno regno,
 		case GDB_REGNO_VTYPE:
 		case GDB_REGNO_MISA:
 		case GDB_REGNO_DCSR:
-		case GDB_REGNO_DSCRATCH0:
+		case GDB_REGNO_DDDC:
 		case GDB_REGNO_MEPC:
 		case GDB_REGNO_SATP:
 			/*
@@ -215,6 +216,8 @@ static inline bool riscv_reg_impl_gdb_regno_cacheable(enum gdb_regno regno,
 		case GDB_REGNO_TSELECT:	/* I think this should be above, but then it doesn't work. */
 		case GDB_REGNO_TDATA1:	/* Changes value when tselect is changed. */
 		case GDB_REGNO_TDATA2:  /* Changes value when tselect is changed. */
+		case GDB_REGNO_DSCRATCH0:
+		case GDB_REGNO_DSCRATCH1:
 		default:
 			return false;
 	}

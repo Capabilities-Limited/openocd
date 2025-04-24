@@ -372,12 +372,19 @@ int riscv013_reg_examine_all(struct target *target)
 
 	/* Reading CSRs may clobber "s0", "s1", so it should be possible to
 	 * save them in cache. */
-	res = init_cache_entry(target, riscv_supports_zcheripurecap(target) ?
-			GDB_REGNO_CS0 : GDB_REGNO_S0);
+	if (riscv_supports_zcheripurecap(target)) {
+		res = init_cache_entry(target, GDB_REGNO_CS0);
+		if (res != ERROR_OK)
+			return res;
+		res = init_cache_entry(target, GDB_REGNO_CS1);
+		if (res != ERROR_OK)
+			return res;
+	}
+
+	res = init_cache_entry(target, GDB_REGNO_S0);
 	if (res != ERROR_OK)
 		return res;
-	res = init_cache_entry(target, riscv_supports_zcheripurecap(target) ?
-			GDB_REGNO_CS1 : GDB_REGNO_S1);
+	res = init_cache_entry(target, GDB_REGNO_S1);
 	if (res != ERROR_OK)
 		return res;
 
@@ -434,6 +441,9 @@ int riscv013_reg_save(struct target *target, enum gdb_regno regid)
 		 */
 		return ERROR_OK;
 	}
+
+	if (riscv_supports_zcheripurecap(target) && regid <= GDB_REGNO_XPR31)
+		regid += GDB_REGNO_C0;
 
 	struct reg *reg = riscv_reg_impl_cache_entry(target, regid);
 

@@ -16,6 +16,10 @@
 /** Return the name of the register by it's number in register cache. */
 const char *riscv_reg_gdb_regno_name(const struct target *target, enum gdb_regno regno);
 
+bool riscv_reg_gdb_regno_is_cheri_gpr(enum gdb_regno regno);
+bool riscv_reg_gdb_regno_is_cheri_csr(const struct target *target, enum gdb_regno regno);
+bool riscv_reg_gdb_regno_is_cheri_reg(const struct target *target, enum gdb_regno regno);
+
 /** Free register cache and associated structures. */
 void riscv_reg_free_all(struct target *target);
 
