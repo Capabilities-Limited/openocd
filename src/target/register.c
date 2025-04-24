@@ -124,3 +124,12 @@ void register_init_dummy(struct reg *reg)
 {
 	reg->type = &dummy_type;
 }
+
+bool register_is_cheri_reg(struct reg *reg)
+{
+	assert(reg);
+
+	return (reg->reg_data_type && (reg->reg_data_type->type == REG_TYPE_CODE_CAPABILITY ||
+				reg->reg_data_type->type == REG_TYPE_DATA_CAPABILITY));
+}
+

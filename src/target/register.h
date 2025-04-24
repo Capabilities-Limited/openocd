@@ -32,6 +32,8 @@ enum reg_type {
 	REG_TYPE_UINT128,
 	REG_TYPE_CODE_PTR,
 	REG_TYPE_DATA_PTR,
+	REG_TYPE_CODE_CAPABILITY,
+	REG_TYPE_DATA_CAPABILITY,
 	REG_TYPE_FLOAT,
 	REG_TYPE_IEEE_SINGLE,
 	REG_TYPE_IEEE_DOUBLE,
@@ -162,5 +164,7 @@ void register_unlink_cache(struct reg_cache **cache_p, const struct reg_cache *c
 void register_cache_invalidate(struct reg_cache *cache);
 
 void register_init_dummy(struct reg *reg);
+
+bool register_is_cheri_reg(struct reg *reg);
 
 #endif /* OPENOCD_TARGET_REGISTER_H */

@@ -2131,6 +2131,10 @@ static const char *gdb_get_reg_type_name(enum reg_type type)
 			return "code_ptr";
 		case REG_TYPE_DATA_PTR:
 			return "data_ptr";
+		case REG_TYPE_CODE_CAPABILITY:
+			return "code_capability";
+		case REG_TYPE_DATA_CAPABILITY:
+			return "data_capability";
 		case REG_TYPE_FLOAT:
 			return "float";
 		case REG_TYPE_IEEE_SINGLE:
