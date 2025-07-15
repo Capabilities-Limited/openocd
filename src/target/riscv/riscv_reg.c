@@ -955,7 +955,21 @@ static int riscv_set_or_write_register(struct target *target,
 
 	keep_alive();
 
-	if (regid == GDB_REGNO_PC || regid == GDB_REGNO_PCC) {
+	if (regid == GDB_REGNO_PC) {
+		if (riscv_supports_zcheripurecap(target)) {
+			riscv_reg_t dpc = {0};
+			if (riscv_reg_get(target, &dpc, GDB_REGNO_DPC) != ERROR_OK)
+				return ERROR_FAIL;
+
+			/* TODO: May need to usse a infinite capability to avoid
+			 * CHERI exception if PC value violates the bounds and
+			 * permission
+			 */
+			value.tag = dpc.tag;
+			value.meta = dpc.meta;
+		}
+		return riscv_set_or_write_register(target, GDB_REGNO_DPC, value, write_through);
+	} else if (regid == GDB_REGNO_PCC) {
 		return riscv_set_or_write_register(target, GDB_REGNO_DPC, value, write_through);
 	} else if (regid == GDB_REGNO_DDC) {
 		return riscv_set_or_write_register(target, GDB_REGNO_DDDC, value, write_through);
