@@ -29,4 +29,10 @@ int riscv013_reg_examine_all(struct target *target);
  */
 int riscv013_reg_save(struct target *target, enum gdb_regno regid);
 
+/**
+ * This function sets the debug mode of the target hart to Capability Pointer
+ * mode
+ */
+int set_zcherihybird_debug_mode(struct target *target);
+
 #endif /* OPENOCD_TARGET_RISCV_RISCV_013_REG_H */
