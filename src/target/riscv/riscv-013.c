@@ -1726,40 +1726,6 @@ static int cheri_gpr_write_progbuf(struct target *target, enum gdb_regno number,
 	if (register_write_abstract(target, cdreg, value.value) != ERROR_OK)
 		return ERROR_FAIL;
 
-	/* Mask out the CT-bit and M-bit from the meta if a valid tag needs to be restored as
-	 * cbld is used to restore the tag bit from dinfc. However, cbld will clear the tag if
-	 * cs2 (restored capability) has CT-bit and M-bit. The CT-bit and M-bit will then
-	 * restored by scmode and sentry instructions. */
-	bool ct_bit_valid = false;
-	bool m_bit_valid = false;
-	if (value.tag) {
-		/* Handle CT-bit  */
-		riscv_cheri_meta_t ct_bit_mask = (riscv_clen(target) == 128) ? CLEN_128_CAP_CT : CLEN_64_CAP_CT;
-		ct_bit_valid = value.meta & ct_bit_mask;
-		if (ct_bit_valid)
-			value.meta &= ~ct_bit_mask;
-
-		/* Handle M-bit if target supports zcherihybrid as the M-bit of dinfc may be zero and it may cause
-		 * cbld clear the tag
-		 * TODO: Special M-bit handling as the tag is cleared by cbld if M-bit is 1 in cs2 but M-bit is
-		 * 0 in cs1 on the testing platform. This handling may be removed in future if cbld tag clear
-		 * is clarified as the tag clearing for this specific case is not mentioned in CHERI extension
-		 * specification */
-		if (riscv_supports_zcherihybrid(target)) {
-			if (riscv_clen(target) == 128) {
-				m_bit_valid = value.meta & CLEN_128_CAP_M;
-				if (m_bit_valid)
-					value.meta &= ~CLEN_128_CAP_M;
-			} else { /* CLEN == 64 */
-				m_bit_valid =
-					((value.meta & CLEN_64_CAP_AP_M_QUADRANT_MASK) == CLEN_64_CAP_AP_M_QUADRANT_EXE_CAP) &&
-					((value.meta & CLEN_64_CAP_AP_M_BIT0));
-				if (m_bit_valid)
-					value.meta &= ~CLEN_64_CAP_AP_M_BIT0;
-			}
-		}
-	}
-
 	/* Write meta */
 	if (write_abstract_arg(target, 0, value.meta, riscv_xlen(target)) != ERROR_OK)
 		return ERROR_FAIL;
@@ -1777,7 +1743,7 @@ static int cheri_gpr_write_progbuf(struct target *target, enum gdb_regno number,
 	if (riscv_program_exec(&program, target) != ERROR_OK)
 		return ERROR_FAIL;
 
-	/* Write tag and restore CT-bit and M-bit */
+	/* Write tag */
 	if (value.tag) {
 		riscv_program_init(&program, target);
 		if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
@@ -1790,30 +1756,6 @@ static int cheri_gpr_write_progbuf(struct target *target, enum gdb_regno number,
 			return ERROR_FAIL;
 		if (riscv_program_exec(&program, target) != ERROR_OK)
 			return ERROR_FAIL;
-
-		/* Set M-bit if it's valid */
-		if (m_bit_valid) {
-			riscv_program_init(&program, target);
-			if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_insert(&program, addi(treg0, 0, 1)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_insert(&program, scmode(cdreg, cdreg, treg0)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_exec(&program, target) != ERROR_OK)
-				return ERROR_FAIL;
-		}
-
-		/* Set CT-bit if it's valid */
-		if (ct_bit_valid) {
-			riscv_program_init(&program, target);
-			if (riscv_program_insert(&program, sentry(cdreg, cdreg)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_exec(&program, target) != ERROR_OK)
-				return ERROR_FAIL;
-		}
 	}
 
 	return ERROR_OK;
@@ -1847,40 +1789,6 @@ static int cheri_csr_write_progbuf(struct target *target, enum gdb_regno number,
 	if (register_write_abstract(target, GDB_REGNO_S0, value.value) != ERROR_OK)
 		return ERROR_FAIL;
 
-	/* Mask out the CT-bit and M-bit from the meta if a valid tag needs to be restored as
-	 * cbld is used to restore the tag bit from dinfc. However, cbld will clear the tag if
-	 * cs2 (restored capability) has CT-bit and M-bit. The CT-bit and M-bit will then
-	 * restored by scmode and sentry instructions. */
-	bool ct_bit_valid = false;
-	bool m_bit_valid = false;
-	if (value.tag) {
-		/* Handle CT-bit  */
-		riscv_cheri_meta_t ct_bit_mask = (riscv_clen(target) == 128) ? CLEN_128_CAP_CT : CLEN_64_CAP_CT;
-		ct_bit_valid = value.meta & ct_bit_mask;
-		if (ct_bit_valid)
-			value.meta &= ~ct_bit_mask;
-
-		/* Handle M-bit if target supports zcherihybrid as the M-bit of dinfc may be zero and it may cause
-		 * cbld clear the tag
-		 * TODO: Special M-bit handling as the tag is cleared by cbld if M-bit is 1 in cs2 but M-bit is
-		 * 0 in cs1 on the testing platform. This handling may be removed in future if cbld tag clear
-		 * is clarified as the tag clearing for this specific case is not mentioned in CHERI extension
-		 * specification */
-		if (riscv_supports_zcherihybrid(target)) {
-			if (riscv_clen(target) == 128) {
-				m_bit_valid = value.meta & CLEN_128_CAP_M;
-				if (m_bit_valid)
-					value.meta &= ~CLEN_128_CAP_M;
-			} else { /* CLEN == 64 */
-				m_bit_valid =
-					((value.meta & CLEN_64_CAP_AP_M_QUADRANT_MASK) == CLEN_64_CAP_AP_M_QUADRANT_EXE_CAP) &&
-					((value.meta & CLEN_64_CAP_AP_M_BIT0));
-				if (m_bit_valid)
-					value.meta &= ~CLEN_64_CAP_AP_M_BIT0;
-			}
-		}
-	}
-
 	/* Write meta */
 	if (write_abstract_arg(target, 0, value.meta, riscv_xlen(target)) != ERROR_OK)
 		return ERROR_FAIL;
@@ -1898,7 +1806,7 @@ static int cheri_csr_write_progbuf(struct target *target, enum gdb_regno number,
 	if (riscv_program_exec(&program, target) != ERROR_OK)
 		return ERROR_FAIL;
 
-	/* Write tag and restore CT-bit and M-bit */
+	/* Write tag */
 	if (value.tag) {
 		riscv_program_init(&program, target);
 		if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
@@ -1911,30 +1819,6 @@ static int cheri_csr_write_progbuf(struct target *target, enum gdb_regno number,
 			return ERROR_FAIL;
 		if (riscv_program_exec(&program, target) != ERROR_OK)
 			return ERROR_FAIL;
-
-		/* Set M-bit if it's valid */
-		if (m_bit_valid) {
-			riscv_program_init(&program, target);
-			if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_insert(&program, addi(S1, 0, 1)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_insert(&program, scmode(S0, S0, S1)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_exec(&program, target) != ERROR_OK)
-				return ERROR_FAIL;
-		}
-
-		/* Set CT-bit if it's valid */
-		if (ct_bit_valid) {
-			riscv_program_init(&program, target);
-			if (riscv_program_insert(&program, sentry(S0, S0)) != ERROR_OK)
-				return ERROR_FAIL;
-			if (riscv_program_exec(&program, target) != ERROR_OK)
-				return ERROR_FAIL;
-		}
 	}
 
 	/* Write CSR */
