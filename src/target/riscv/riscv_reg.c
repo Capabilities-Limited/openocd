@@ -374,7 +374,7 @@ static struct reg_data_type *gdb_regno_reg_data_type(const struct target *target
 			case CSR_SSCRATCH:
 			case CSR_DDC:
 			case CSR_DDDC:
-			case CSR_DINFC:
+			case CSR_DROOTC:
 				return riscv_supports_zcheripurecap(target) ? &type_data_capability : NULL;
 		}
 	}
@@ -446,7 +446,7 @@ uint32_t gdb_regno_size(const struct target *target, uint32_t regno)
 
 			case CSR_DDC:
 			case CSR_DDDC:
-			case CSR_DINFC:
+			case CSR_DROOTC:
 				return riscv_clen(target) + 1;
 		}
 	}
@@ -469,7 +469,7 @@ bool riscv_reg_gdb_regno_is_cheri_csr(const struct target *target, enum gdb_regn
 	switch (regno - GDB_REGNO_CSR0) {
 		case CSR_DDC:
 		case CSR_DDDC:
-		case CSR_DINFC:
+		case CSR_DROOTC:
 			/* These CSRs are CHERI-only and always contain a whole capability. */
 			return true;
 		case CSR_DPC:
@@ -575,9 +575,6 @@ bool riscv_reg_impl_gdb_regno_exist(const struct target *target, uint32_t regno)
 		case CSR_STVAL:
 		case CSR_SATP:
 			return riscv_supports_extension(target, 'S');
-		case CSR_STVAL2:
-			return riscv_supports_extension(target, 'S') &&
-				riscv_supports_zcheripurecap(target);
 		case CSR_MEDELEG:
 		case CSR_MIDELEG:
 			/* "In systems with only M-mode, or with both M-mode and
@@ -706,7 +703,7 @@ bool riscv_reg_impl_gdb_regno_exist(const struct target *target, uint32_t regno)
 				riscv_supports_extension(target, 'H');
 		case CSR_DDDC:
 		case CSR_DDC:
-		case CSR_DINFC:
+		case CSR_DROOTC:
 			return riscv_supports_zcheripurecap(target);
 	}
 	return is_known_standard_csr(csr_number);

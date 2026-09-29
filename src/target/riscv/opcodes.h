@@ -208,10 +208,10 @@ static uint32_t addi(unsigned int dest, unsigned int src, int16_t imm)
 	return imm_i((uint16_t)imm) | inst_rs1(src) | inst_rd(dest) | MATCH_ADDI;
 }
 
-static uint32_t caddi(unsigned int dest, unsigned int src, uint16_t imm) __attribute__ ((unused));
-static uint32_t caddi(unsigned int dest, unsigned int src, uint16_t imm)
+static uint32_t yaddi(unsigned int dest, unsigned int src, uint16_t imm) __attribute__ ((unused));
+static uint32_t yaddi(unsigned int dest, unsigned int src, uint16_t imm)
 {
-	return imm_i(imm) | inst_rs1(src) | inst_rd(dest) | MATCH_CADDI;
+	return imm_i(imm) | inst_rs1(src) | inst_rd(dest) | MATCH_YADDI;
 }
 
 static uint32_t csrr(unsigned int rd, unsigned int csr) __attribute__ ((unused));
@@ -455,70 +455,76 @@ static uint32_t vslide1down_vx(unsigned int vd, unsigned int vs2,
 
 /* CHERI opcodes */
 
-static uint32_t scaddr(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
-static uint32_t scaddr(unsigned int cd, unsigned int cs1, unsigned int rs2)
+static uint32_t yaddrw(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
+static uint32_t yaddrw(unsigned int cd, unsigned int cs1, unsigned int rs2)
 {
-	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_SCADDR;
+	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_YADDRW;
 }
 
-static uint32_t lc(unsigned int rd, unsigned int base, uint16_t offset) __attribute__ ((unused));
-static uint32_t lc(unsigned int rd, unsigned int base, uint16_t offset)
+static uint32_t ly(unsigned int rd, unsigned int base, uint16_t offset) __attribute__ ((unused));
+static uint32_t ly(unsigned int rd, unsigned int base, uint16_t offset)
 {
-	return imm_i(offset) | inst_rs1(base) | inst_rd(rd) | MATCH_LQ;
+	return imm_i(offset) | inst_rs1(base) | inst_rd(rd) | MATCH_LY;
 }
 
 static uint32_t sc(unsigned int src, unsigned int base, uint16_t offset) __attribute__ ((unused));
 static uint32_t sc(unsigned int src, unsigned int base, uint16_t offset)
 {
-	return imm_s(offset) | inst_rs2(src) | inst_rs1(base) | MATCH_SQ;
+	return imm_s(offset) | inst_rs2(src) | inst_rs1(base) | MATCH_SY;
 }
 
-static uint32_t schi(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
-static uint32_t schi(unsigned int cd, unsigned int cs1, unsigned int rs2)
+static uint32_t packy(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
+static uint32_t packy(unsigned int cd, unsigned int cs1, unsigned int rs2)
 {
-	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_SCHI;
+	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_PACKY;
 }
 
-static uint32_t cbld(unsigned int cd, unsigned int cs1, unsigned int cs2) __attribute__ ((unused));
-static uint32_t cbld(unsigned int cd, unsigned int cs1, unsigned int cs2)
+static uint32_t ybld(unsigned int cd, unsigned int cs1, unsigned int cs2) __attribute__ ((unused));
+static uint32_t ybld(unsigned int cd, unsigned int cs1, unsigned int cs2)
 {
-	return inst_rs2(cs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_CBLD;
+	return inst_rs2(cs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_YBLD;
 }
 
-static uint32_t scmode(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
-static uint32_t scmode(unsigned int cd, unsigned int cs1, unsigned int rs2)
+static uint32_t ymodew(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
+static uint32_t ymodew(unsigned int cd, unsigned int cs1, unsigned int rs2)
 {
-	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_SCMODE;
+	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_YMODEW;
 }
 
-static uint32_t sentry(unsigned int cd, unsigned int cs1) __attribute__ ((unused));
-static uint32_t sentry(unsigned int cd, unsigned int cs1)
+static uint32_t ysentry(unsigned int cd, unsigned int cs1) __attribute__ ((unused));
+static uint32_t ysentry(unsigned int cd, unsigned int cs1)
 {
-	return inst_rs1(cs1) | inst_rd(cd) | MATCH_SENTRY;
+	return inst_rs1(cs1) | inst_rd(cd) | MATCH_YSENTRY;
 }
 
-static uint32_t gctag(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
-static uint32_t gctag(unsigned int rd, unsigned int cs1)
+static uint32_t ytagr(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
+static uint32_t ytagr(unsigned int rd, unsigned int cs1)
 {
-	return inst_rs1(cs1) | inst_rd(rd) | MATCH_GCTAG;
+	return inst_rs1(cs1) | inst_rd(rd) | MATCH_YTAGR;
 }
 
-static uint32_t gchi(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
-static uint32_t gchi(unsigned int rd, unsigned int cs1)
+static uint32_t yhir_rv64(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
+static uint32_t yhir_rv64(unsigned int rd, unsigned int cs1)
 {
-	return inst_rs1(cs1) | inst_rd(rd) | MATCH_GCHI;
+	return inst_rs1(cs1) | inst_rd(rd) | MATCH_YHIR_RV64;
 }
 
-static uint32_t modesw_cap(void) __attribute__ ((unused));
-static uint32_t modesw_cap(void)
+static uint32_t yhir_rv32(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
+static uint32_t yhir_rv32(unsigned int rd, unsigned int cs1)
 {
-	return MATCH_MODESW_CAP;
+	return inst_rs1(cs1) | inst_rd(rd) | MATCH_YHIR_RV32;
 }
 
-static uint32_t modesw_int(void) __attribute__ ((unused));
-static uint32_t modesw_int(void)
+static uint32_t ymodeswy(void) __attribute__ ((unused));
+static uint32_t ymodeswy(void)
 {
-	return MATCH_MODESW_INT;
+	return MATCH_YMODESWY;
+}
+
+static uint32_t ymodeswi(void) __attribute__ ((unused));
+static uint32_t ymodeswi(void)
+{
+	return MATCH_YMODESWI;
 }
 
 #endif /* OPENOCD_TARGET_RISCV_OPCODES_H */

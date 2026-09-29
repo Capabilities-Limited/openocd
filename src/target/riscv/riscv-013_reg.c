@@ -150,7 +150,7 @@ static int examine_clen(struct target *target)
 	 */
 	struct riscv_program program;
 	riscv_program_init(&program, target);
-	if (examine_cheri && riscv_program_insert(&program, gchi(ZERO, ZERO)) != ERROR_OK)
+	if (examine_cheri && riscv_program_insert(&program, yhir_rv64(ZERO, ZERO)) != ERROR_OK)
 		examine_cheri = false;
 
 	if (examine_cheri && riscv_program_exec(&program, target) != ERROR_OK)
@@ -163,7 +163,7 @@ static int examine_clen(struct target *target)
 		* see if it trigger an exception or not
 		*/
 		riscv_program_init(&program, target);
-		if (examine_cheri && riscv_program_insert(&program, scmode(ZERO, ZERO, ZERO)) != ERROR_OK)
+		if (examine_cheri && riscv_program_insert(&program, ymodew(ZERO, ZERO, ZERO)) != ERROR_OK)
 			examine_cheri = false;
 
 		if (examine_cheri && riscv_program_exec(&program, target) != ERROR_OK)
@@ -381,7 +381,7 @@ int set_zcherihybird_debug_mode(struct target *target)
 	 * See https://github.com/riscv/riscv-cheri/releases/tag/v0.9.5 */
 	struct riscv_program program;
 	riscv_program_init(&program, target);
-	if (riscv_program_insert(&program, modesw_cap()) != ERROR_OK)
+	if (riscv_program_insert(&program, ymodeswy()) != ERROR_OK)
 		return ERROR_FAIL;
 
 	if (riscv_program_exec(&program, target) != ERROR_OK)

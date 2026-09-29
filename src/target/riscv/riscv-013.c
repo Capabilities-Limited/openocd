@@ -1463,7 +1463,7 @@ static int cheri_gpr_read_progbuf(struct target *target, riscv_reg_t *value,
 	riscv_program_init(&program, target);
 	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, gchi(treg0, csreg)) != ERROR_OK)
+	if (riscv_program_insert(&program, yhir_rv64(treg0, csreg)) != ERROR_OK)
 		return ERROR_FAIL;
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, sd(treg0, 0, info->dataaddr)) != ERROR_OK)
@@ -1479,7 +1479,7 @@ static int cheri_gpr_read_progbuf(struct target *target, riscv_reg_t *value,
 	riscv_program_init(&program, target);
 	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, gctag(treg0, csreg)) != ERROR_OK)
+	if (riscv_program_insert(&program, ytagr(treg0, csreg)) != ERROR_OK)
 		return ERROR_FAIL;
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, sd(treg0, 0, info->dataaddr)) != ERROR_OK)
@@ -1513,7 +1513,7 @@ static int cheri_csr_read_progbuf(struct target *target, riscv_reg_t *value,
 			csrreg == CSR_JVT ||
 			csrreg == CSR_DDC ||
 			csrreg == CSR_DDDC ||
-			csrreg == CSR_DINFC);
+			csrreg == CSR_DROOTC);
 
 	RISCV013_INFO(info);
 
@@ -1534,7 +1534,7 @@ static int cheri_csr_read_progbuf(struct target *target, riscv_reg_t *value,
 	riscv_program_init(&program, target);
 	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, gchi(S1, S0)) != ERROR_OK)
+	if (riscv_program_insert(&program, yhir_rv64(S1, S0)) != ERROR_OK)
 		return ERROR_FAIL;
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, sd(S1, 0, info->dataaddr)) != ERROR_OK)
@@ -1550,7 +1550,7 @@ static int cheri_csr_read_progbuf(struct target *target, riscv_reg_t *value,
 	riscv_program_init(&program, target);
 	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, gctag(S1, S0)) != ERROR_OK)
+	if (riscv_program_insert(&program, ytagr(S1, S0)) != ERROR_OK)
 		return ERROR_FAIL;
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, sd(S1, 0, info->dataaddr)) != ERROR_OK)
@@ -1741,7 +1741,7 @@ static int cheri_gpr_write_progbuf(struct target *target, enum gdb_regno number,
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, ld(treg0, 0, info->dataaddr)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, schi(cdreg, cdreg, treg0)) != ERROR_OK)
+	if (riscv_program_insert(&program, packy(cdreg, cdreg, treg0)) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
@@ -1753,9 +1753,9 @@ static int cheri_gpr_write_progbuf(struct target *target, enum gdb_regno number,
 		riscv_program_init(&program, target);
 		if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
 			return ERROR_FAIL;
-		if (riscv_program_insert(&program, csrr(treg0, CSR_DINFC)) != ERROR_OK)
+		if (riscv_program_insert(&program, csrr(treg0, CSR_DROOTC)) != ERROR_OK)
 			return ERROR_FAIL;
-		if (riscv_program_insert(&program, cbld(cdreg, treg0, cdreg)) != ERROR_OK)
+		if (riscv_program_insert(&program, ybld(cdreg, treg0, cdreg)) != ERROR_OK)
 			return ERROR_FAIL;
 		if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
 			return ERROR_FAIL;
@@ -1783,7 +1783,7 @@ static int cheri_csr_write_progbuf(struct target *target, enum gdb_regno number,
 			csrreg == CSR_JVT ||
 			csrreg == CSR_DDC ||
 			csrreg == CSR_DDDC ||
-			csrreg == CSR_DINFC);
+			csrreg == CSR_DROOTC);
 
 	RISCV013_INFO(info);
 
@@ -1805,7 +1805,7 @@ static int cheri_csr_write_progbuf(struct target *target, enum gdb_regno number,
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, ld(S1, 0, info->dataaddr)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, schi(S0, S0, S1)) != ERROR_OK)
+	if (riscv_program_insert(&program, packy(S0, S0, S1)) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
@@ -1817,9 +1817,9 @@ static int cheri_csr_write_progbuf(struct target *target, enum gdb_regno number,
 		riscv_program_init(&program, target);
 		if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
 			return ERROR_FAIL;
-		if (riscv_program_insert(&program, csrr(S1, CSR_DINFC)) != ERROR_OK)
+		if (riscv_program_insert(&program, csrr(S1, CSR_DROOTC)) != ERROR_OK)
 			return ERROR_FAIL;
-		if (riscv_program_insert(&program, cbld(S0, S1, S0)) != ERROR_OK)
+		if (riscv_program_insert(&program, ybld(S0, S1, S0)) != ERROR_OK)
 			return ERROR_FAIL;
 		if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
 			return ERROR_FAIL;
@@ -4349,9 +4349,9 @@ static int cheri_address_to_pointer(struct target *target, enum gdb_regno number
 	riscv_program_init(&program, target);
 	if (riscv_program_insert(&program, csrrw(treg, treg, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, csrr(treg, CSR_DINFC)) != ERROR_OK)
+	if (riscv_program_insert(&program, csrr(treg, CSR_DROOTC)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, scaddr(addrreg, treg, addrreg)) != ERROR_OK)
+	if (riscv_program_insert(&program, yaddrw(addrreg, treg, addrreg)) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv_program_insert(&program, csrrw(treg, treg, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
@@ -4399,7 +4399,7 @@ static int read_memory_progbuf_inner_fill_progbuf(struct target *target,
 			return ERROR_FAIL;
 	} else {
 		if (riscv_supports_zcheripurecap(target)) {
-			if (riscv_program_caddi(&program, GDB_REGNO_S0, GDB_REGNO_S0, increment)
+			if (riscv_program_yaddi(&program, GDB_REGNO_S0, GDB_REGNO_S0, increment)
 					!= ERROR_OK)
 				return ERROR_FAIL;
 		} else {
@@ -4952,7 +4952,7 @@ read_memory_progbuf_capability_single(struct target *target, target_addr_t addre
 
 	riscv_program_init(&program, target);
 
-	if (riscv_program_lcr(&program, GDB_REGNO_S1, GDB_REGNO_S1, 0) != ERROR_OK)
+	if (riscv_program_lyr(&program, GDB_REGNO_S1, GDB_REGNO_S1, 0) != ERROR_OK)
 		return mem_access_result(MEM_ACCESS_FAILED_CHERI_SINGLE_FAILED);
 
 	if (riscv_program_exec(&program, target) != ERROR_OK)
@@ -5386,7 +5386,7 @@ static int write_memory_progbuf_fill_progbuf(struct target *target, uint32_t siz
 		return ERROR_FAIL;
 
 	if (riscv_supports_zcheripurecap(target)) {
-		if (riscv_program_caddi(&program, GDB_REGNO_S0, GDB_REGNO_S0, (int16_t)size)
+		if (riscv_program_yaddi(&program, GDB_REGNO_S0, GDB_REGNO_S0, (int16_t)size)
 				!= ERROR_OK)
 			return ERROR_FAIL;
 	} else {

@@ -484,7 +484,7 @@ static struct target_type *get_target_type(struct target *target)
 
 static inline int riscv_get_cheri_infinite_capability(struct target *target, riscv_reg_t *value)
 {
-	return riscv_reg_get(target, value, GDB_REGNO_DINFC);
+	return riscv_reg_get(target, value, GDB_REGNO_DROOTC);
 }
 
 static struct riscv_private_config *alloc_default_riscv_private_config(void)
@@ -3654,23 +3654,23 @@ static int riscv_privilege_restore(struct target *target, riscv_reg_value_t old_
 	return riscv_reg_set_value(target, GDB_REGNO_PRIV, old_priv);
 }
 
-static int riscv_mseccfg_backup_enable_cheri(struct target *target, riscv_reg_value_t *old_mseccfg)
+static int riscv_misa_backup_enable_cheri(struct target *target, riscv_reg_value_t *old_misa)
 {
-	riscv_reg_value_t current_mseccfg;
-	int ret = riscv_reg_get_value(target, &current_mseccfg, CSR_MSECCFG + GDB_REGNO_CSR0);
+	riscv_reg_value_t current_misa;
+	int ret = riscv_reg_get_value(target, &current_misa, CSR_MISA + GDB_REGNO_CSR0);
 	if (ret != ERROR_OK) {
-		LOG_TARGET_ERROR(target, "Failed to read mseccfg register!");
+		LOG_TARGET_ERROR(target, "Failed to read misa register!");
 		return ret;
 	}
-	if (old_mseccfg)
-		*old_mseccfg = current_mseccfg;
-	riscv_reg_value_t new_mseccfg = MSECCFG_CRE;
-	return riscv_reg_set_value(target, CSR_MSECCFG + GDB_REGNO_CSR0, new_mseccfg);
+	if (old_misa)
+		*old_misa = current_misa;
+	riscv_reg_value_t new_misa = current_misa | MISA_Y;
+	return riscv_reg_set_value(target, CSR_MISA + GDB_REGNO_CSR0, new_misa);
 }
 
-static int riscv_mseccfg_restore(struct target *target, riscv_reg_value_t old_mseccfg)
+static int riscv_misa_restore(struct target *target, riscv_reg_value_t old_misa)
 {
-	return riscv_reg_set_value(target, CSR_MSECCFG + GDB_REGNO_CSR0, old_mseccfg);
+	return riscv_reg_set_value(target, CSR_MISA + GDB_REGNO_CSR0, old_misa);
 }
 
 /* Algorithm must end with a software breakpoint instruction. */
@@ -3780,7 +3780,7 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 
 	/* Setup resume program counter for algorithm */
 	riscv_reg_t entry_pc = {0};
-	riscv_reg_value_t current_cheri_status = 0;
+	riscv_reg_value_t current_misa = 0;
 	if (riscv_supports_zcheripurecap(target) && arch_info) {
 		if (riscv_get_cheri_infinite_capability(target, &entry_pc) != ERROR_OK)
 			return ERROR_FAIL;
@@ -3791,7 +3791,7 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 
 			if (riscv_algorithm_info->zcherihybrid_mode == RISCV_CHERI_PURECAP_MODE) {
 				/* Enable and backup CHERI status */
-				if (riscv_mseccfg_backup_enable_cheri(target, &current_cheri_status) != ERROR_OK)
+				if (riscv_misa_backup_enable_cheri(target, &current_misa) != ERROR_OK)
 					return ERROR_FAIL;
 			}
 		}
@@ -3894,7 +3894,7 @@ static int riscv_run_algorithm(struct target *target, int num_mem_params,
 	if (riscv_supports_zcherihybrid(target) && arch_info) {
 		struct riscv_algorithm *riscv_algorithm_info = (struct riscv_algorithm *)arch_info;
 		if (riscv_algorithm_info->zcherihybrid_mode == RISCV_CHERI_PURECAP_MODE) {
-			if (riscv_mseccfg_restore(target, current_cheri_status) != ERROR_OK)
+			if (riscv_misa_restore(target, current_misa) != ERROR_OK)
 				return ERROR_FAIL;
 		}
 	}

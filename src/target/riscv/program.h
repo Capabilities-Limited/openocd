@@ -50,7 +50,7 @@ int riscv_program_insert(struct riscv_program *p, riscv_insn_t i);
 /* Helpers to assemble various instructions.  Return 0 on success.  These might
  * assemble into a multi-instruction sequence that overwrites some other
  * register, but those will be properly saved and restored. */
-int riscv_program_lcr(struct riscv_program *p, enum gdb_regno d, enum gdb_regno a, int16_t o);
+int riscv_program_lyr(struct riscv_program *p, enum gdb_regno d, enum gdb_regno a, int16_t o);
 int riscv_program_ldr(struct riscv_program *p, enum gdb_regno d, enum gdb_regno a, int16_t o);
 int riscv_program_lwr(struct riscv_program *p, enum gdb_regno d, enum gdb_regno a, int16_t o);
 int riscv_program_lhr(struct riscv_program *p, enum gdb_regno d, enum gdb_regno a, int16_t o);
@@ -76,6 +76,6 @@ int riscv_program_fence_rw_rw(struct riscv_program *p);
 int riscv_program_ebreak(struct riscv_program *p);
 
 int riscv_program_addi(struct riscv_program *p, enum gdb_regno d, enum gdb_regno s, int16_t i);
-int riscv_program_caddi(struct riscv_program *p, enum gdb_regno d, enum gdb_regno s, int16_t i);
+int riscv_program_yaddi(struct riscv_program *p, enum gdb_regno d, enum gdb_regno s, int16_t i);
 
 #endif /* OPENOCD_TARGET_RISCV_PROGRAM_H */
