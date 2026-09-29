@@ -2415,7 +2415,8 @@ static int examine(struct target *target)
 
 	info->nscratch = get_field(hartinfo, DM_HARTINFO_NSCRATCH);
 	info->datasize = get_field(hartinfo, DM_HARTINFO_DATASIZE);
-	info->dataaccess = get_field(hartinfo, DM_HARTINFO_DATAACCESS);
+        // Hack for CVA6: ignore reported dataaccess and always assume zero
+	info->dataaccess = 0;
 	info->dataaddr = get_field(hartinfo, DM_HARTINFO_DATAADDR);
 
 	if (!get_field(dmstatus, DM_DMSTATUS_AUTHENTICATED)) {
