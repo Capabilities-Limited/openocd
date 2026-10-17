@@ -150,7 +150,7 @@ static int examine_clen(struct target *target)
 	 */
 	struct riscv_program program;
 	riscv_program_init(&program, target);
-	if (examine_cheri && riscv_program_insert(&program, yhir_rv64(ZERO, ZERO)) != ERROR_OK)
+	if (examine_cheri && riscv_program_insert(&program, yhir(ZERO, ZERO)) != ERROR_OK)
 		examine_cheri = false;
 
 	if (examine_cheri && riscv_program_exec(&program, target) != ERROR_OK)

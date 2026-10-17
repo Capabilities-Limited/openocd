@@ -473,10 +473,10 @@ static uint32_t sc(unsigned int src, unsigned int base, uint16_t offset)
 	return imm_s(offset) | inst_rs2(src) | inst_rs1(base) | MATCH_SY;
 }
 
-static uint32_t packy(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
-static uint32_t packy(unsigned int cd, unsigned int cs1, unsigned int rs2)
+static uint32_t yhiw(unsigned int cd, unsigned int cs1, unsigned int rs2) __attribute__ ((unused));
+static uint32_t yhiw(unsigned int cd, unsigned int cs1, unsigned int rs2)
 {
-	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_PACKY;
+	return inst_rs2(rs2) | inst_rs1(cs1) | inst_rd(cd) | MATCH_YHIW;
 }
 
 static uint32_t ybld(unsigned int cd, unsigned int cs1, unsigned int cs2) __attribute__ ((unused));
@@ -503,16 +503,10 @@ static uint32_t ytagr(unsigned int rd, unsigned int cs1)
 	return inst_rs1(cs1) | inst_rd(rd) | MATCH_YTAGR;
 }
 
-static uint32_t yhir_rv64(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
-static uint32_t yhir_rv64(unsigned int rd, unsigned int cs1)
+static uint32_t yhir(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
+static uint32_t yhir(unsigned int rd, unsigned int cs1)
 {
-	return inst_rs1(cs1) | inst_rd(rd) | MATCH_YHIR_RV64;
-}
-
-static uint32_t yhir_rv32(unsigned int rd, unsigned int cs1) __attribute__ ((unused));
-static uint32_t yhir_rv32(unsigned int rd, unsigned int cs1)
-{
-	return inst_rs1(cs1) | inst_rd(rd) | MATCH_YHIR_RV32;
+	return inst_rs1(cs1) | inst_rd(rd) | MATCH_YHIR;
 }
 
 static uint32_t ymodeswy(void) __attribute__ ((unused));

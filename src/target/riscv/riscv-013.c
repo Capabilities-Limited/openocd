@@ -1463,7 +1463,7 @@ static int cheri_gpr_read_progbuf(struct target *target, riscv_reg_t *value,
 	riscv_program_init(&program, target);
 	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, yhir_rv64(treg0, csreg)) != ERROR_OK)
+	if (riscv_program_insert(&program, yhir(treg0, csreg)) != ERROR_OK)
 		return ERROR_FAIL;
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, sd(treg0, 0, info->dataaddr)) != ERROR_OK)
@@ -1534,7 +1534,7 @@ static int cheri_csr_read_progbuf(struct target *target, riscv_reg_t *value,
 	riscv_program_init(&program, target);
 	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, yhir_rv64(S1, S0)) != ERROR_OK)
+	if (riscv_program_insert(&program, yhir(S1, S0)) != ERROR_OK)
 		return ERROR_FAIL;
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, sd(S1, 0, info->dataaddr)) != ERROR_OK)
@@ -1741,7 +1741,7 @@ static int cheri_gpr_write_progbuf(struct target *target, enum gdb_regno number,
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, ld(treg0, 0, info->dataaddr)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, packy(cdreg, cdreg, treg0)) != ERROR_OK)
+	if (riscv_program_insert(&program, yhiw(cdreg, cdreg, treg0)) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv_program_insert(&program, csrrw(treg0, treg0, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
@@ -1805,7 +1805,7 @@ static int cheri_csr_write_progbuf(struct target *target, enum gdb_regno number,
         // Hack for CVA6: access data CSRs via memory map instead
 	if (riscv_program_insert(&program, ld(S1, 0, info->dataaddr)) != ERROR_OK)
 		return ERROR_FAIL;
-	if (riscv_program_insert(&program, packy(S0, S0, S1)) != ERROR_OK)
+	if (riscv_program_insert(&program, yhiw(S0, S0, S1)) != ERROR_OK)
 		return ERROR_FAIL;
 	if (riscv_program_insert(&program, csrrw(S1, S1, CSR_DSCRATCH0)) != ERROR_OK)
 		return ERROR_FAIL;
